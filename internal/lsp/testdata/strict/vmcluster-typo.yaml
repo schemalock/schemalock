@@ -1,0 +1,6 @@
+apiVersion: operator.example.com/v1
+kind: VMCluster
+metadata:
+  name: demo
+spec:
+  retnionPeriod: "30d"

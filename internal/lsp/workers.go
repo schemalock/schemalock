@@ -50,6 +50,10 @@ type WorkerDeps struct {
 	// version (int32 to match lsp.PublishDiagnosticsParams.Version), and
 	// diagnostics is the validated result list (empty slice = clear).
 	Publish func(ctx context.Context, uri string, version uint32, diagnostics []lsp.Diagnostic)
+	// StrictFn is called once per job to determine whether strict-mode typo
+	// detection is enabled. nil means strict-off. Using a closure (rather than
+	// a snapshot bool) keeps a future didChangeConfiguration path race-free.
+	StrictFn func() bool
 }
 
 // WorkerPool manages a bounded set of goroutines that process validation jobs.
@@ -218,6 +222,24 @@ func (p *WorkerPool) process(j job) {
 
 		if j.ctx.Err() != nil {
 			return
+		}
+
+		// Apply strict-mode schema rewrite when enabled. The rewrite injects
+		// additionalProperties:false at every object node that has properties
+		// but no existing additionalProperties declaration. On rewrite failure
+		// we fall through with the original bytes so baseline validation is
+		// unaffected. The compile key gets a ":strict" suffix so the strict and
+		// non-strict compiled forms can coexist in the Compiler cache without
+		// colliding. Note: "#" must not be used here as a suffix character
+		// because the Compiler uses the key as a synthetic URL path component,
+		// and "#" would be treated as a URL fragment delimiter by the
+		// jsonschema library.
+		if p.deps.StrictFn != nil && p.deps.StrictFn() {
+			if wrapped, werr := validator.WrapStrict(schemaBytes); werr == nil {
+				schemaBytes = wrapped
+				compileKey = compileKey + ":strict"
+			}
+			// else: silent fall-through; strict-mode is best-effort.
 		}
 
 		compiled, err := p.deps.Compiler.Compile(compileKey, schemaBytes)

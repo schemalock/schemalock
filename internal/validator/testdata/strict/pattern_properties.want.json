@@ -1,0 +1,1 @@
+{"type":"object","patternProperties":{"^x-":{"additionalProperties":false,"properties":{"key":{"type":"string"}},"type":"object"}}}

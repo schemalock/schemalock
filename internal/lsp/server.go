@@ -96,6 +96,12 @@ type Server struct {
 	// Used if the chain is ever rebuilt after initialize.
 	fallback bool
 
+	// strict records whether strict-mode typo detection was enabled in
+	// initializationOptions. Set during initialize from the "strict" key;
+	// absent or wrong-type → true (default ON). Read via a StrictFn closure
+	// by the worker pool.
+	strict bool
+
 	// notifyClient sends a server-push notification to the LSP client. It is
 	// set in Run once the jsonrpc2 connection is established. Nil in tests that
 	// don't wire a connection (all notification calls are gated on nil-check).
@@ -186,6 +192,9 @@ func (s *Server) Run(ctx context.Context, rwc io.ReadWriteCloser) error {
 		Publish: func(ctx context.Context, uri string, version uint32, diags []lspprot.Diagnostic) {
 			s.publishDiagnostics(ctx, uri, version, diags)
 		},
+		// StrictFn reads s.strict at job time (always post-initialize). The
+		// closure pattern keeps future didChangeConfiguration support race-free.
+		StrictFn: func() bool { return s.strict },
 	})
 
 	defer func() {

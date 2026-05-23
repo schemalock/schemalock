@@ -1,0 +1,1 @@
+{"additionalProperties":false,"properties":{"foo":{"$ref":"https://example.com/schema.json"}},"type":"object"}

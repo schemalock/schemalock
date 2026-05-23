@@ -1,0 +1,1 @@
+{"additionalProperties":false,"properties":{"spec":{"additionalProperties":false,"properties":{"replicas":{"type":"integer"}},"type":"object"}},"type":"object"}

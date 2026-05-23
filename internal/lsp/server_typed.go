@@ -80,6 +80,15 @@ func (s *Server) initialize(ctx context.Context, params *lsp.InitializeParams) (
 		}
 	}
 
+	// Parse strict from initializationOptions. Default is true (strict-mode ON).
+	// Absent field or wrong type → true.
+	strictEnabled := true
+	if raw, ok := params.InitializationOptions.(map[string]any); ok {
+		if v, ok := raw["strict"].(bool); ok {
+			strictEnabled = v
+		}
+	}
+
 	// Build router now that we have the resolver. The CDN resolver and override
 	// store are stored on the server so they can be reused if the chain is
 	// rebuilt (e.g. after a lockfile reload or version override).
@@ -159,8 +168,8 @@ func (s *Server) initialize(ctx context.Context, params *lsp.InitializeParams) (
 	s.lockfilePath = lockfilePath
 	s.resolver = resolver
 	s.mu.Unlock()
-	// router, yamlls, cdnResolver, overrides, and fallback are not guarded by
-	// mu: they are written once here and only read afterward. The
+	// router, yamlls, cdnResolver, overrides, fallback, and strict are not
+	// guarded by mu: they are written once here and only read afterward. The
 	// happens-before relationship is established by the jsonrpc2 read loop
 	// serialising handler calls.
 	s.router = router
@@ -168,6 +177,8 @@ func (s *Server) initialize(ctx context.Context, params *lsp.InitializeParams) (
 	s.cdnResolver = cdn
 	s.overrides = ov
 	s.fallback = fallbackEnabled
+	s.strict = strictEnabled
+	s.log.Printf("initialize: strict mode = %v", strictEnabled)
 
 	// Build the InitializeResult. TextDocumentSync must be the integer form
 	// (lsp.TextDocumentSyncKindFull = 1.0 as float64, but marshals as 1) to
@@ -453,7 +464,7 @@ func (s *Server) ownedCompletion(params *lsp.CompletionParams, text string, res 
 	// lockfile resolver to enumerate kinds for the group. Skip when nil.
 	if resolver != nil {
 		if items := bootstrapKindCompletions(doc, cursorCtx, resolver); items != nil {
-			return &lsp.CompletionList{IsIncomplete: true, Items: items}, nil
+			return &lsp.CompletionList{IsIncomplete: false, Items: items}, nil
 		}
 	}
 
@@ -489,7 +500,7 @@ func (s *Server) ownedCompletion(params *lsp.CompletionParams, text string, res 
 		if items == nil {
 			items = []lsp.CompletionItem{}
 		}
-		return &lsp.CompletionList{IsIncomplete: true, Items: items}, nil
+		return &lsp.CompletionList{IsIncomplete: false, Items: items}, nil
 	}
 
 	fieldSchema := schemaAtPointer(compiled, cursorCtx.Pointer)
@@ -498,7 +509,7 @@ func (s *Server) ownedCompletion(params *lsp.CompletionParams, text string, res 
 		if items == nil {
 			items = []lsp.CompletionItem{}
 		}
-		return &lsp.CompletionList{IsIncomplete: true, Items: items}, nil
+		return &lsp.CompletionList{IsIncomplete: false, Items: items}, nil
 	}
 
 	return empty, nil

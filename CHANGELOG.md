@@ -10,6 +10,29 @@ this project uses [Semantic Versioning](https://semver.org/).
 
 - Apache-2.0 LICENSE.
 - This CHANGELOG.
+- **Strict-mode typo detection (default ON).** Unknown fields in CRD YAML
+  documents (e.g. `retnionPeriod` for `retentionPeriod`) now produce Error
+  diagnostics. The server injects `additionalProperties: false` at every JSON
+  Schema object node that has `properties` but no existing
+  `additionalProperties` declaration, so fields not in the schema are
+  flagged. Nodes that already declare `additionalProperties` (including
+  `additionalProperties: true` for preserve-unknown-fields regions and
+  `additionalProperties: {type: string}` for annotation maps) are left
+  untouched. To disable per workspace, set `schemalock.strict: false` in
+  `initializationOptions` (threaded by the VS Code extension setting of the
+  same name). Toggling requires `SchemaLock: Restart Language Server`.
+
+### Fixed
+
+- **Per-field diagnostic anchoring.** `additionalProperties` violations
+  (including strict-mode unknown-field errors) now emit one diagnostic per
+  unknown property, anchored at the offending field's source position
+  instead of on the parent key. Multiple unknown fields under the same
+  parent each get their own squiggle.
+- **Completion list now filters as you type.** Property and enum completion
+  responses set `IsIncomplete: false` and set explicit `FilterText`, so
+  VS Code filters locally against the property name instead of re-querying
+  the server with a partial token.
 
 ## 0.1.0 — 2026-05-22
 

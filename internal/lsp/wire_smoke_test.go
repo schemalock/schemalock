@@ -420,6 +420,58 @@ func TestWireSmoke_AllOutputIsFramed(t *testing.T) {
 	}
 }
 
+// TestWireSmoke_StrictFalseWithUnknownFields verifies that when
+// initializationOptions contains { "strict": false, "mode": "contributor" },
+// the server still returns full capabilities (graceful unknown-field handling
+// regression) and does not return an error.
+func TestWireSmoke_StrictFalseWithUnknownFields(t *testing.T) {
+	workspaceDir := t.TempDir()
+	write, read, waitDone := newSmokeSession(t, workspaceDir)
+
+	initReq := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"rootUri": "file://" + workspaceDir,
+			"initializationOptions": map[string]any{
+				"strict": false,
+				"mode":   "contributor", // unknown field — must be silently ignored
+			},
+		},
+	}
+	write(initReq)
+	initResp := read()
+
+	if _, hasErr := initResp["error"]; hasErr {
+		t.Fatalf("initialize must not error with strict:false + unknown fields; got %v", initResp["error"])
+	}
+	result, ok := initResp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("strict-false: result is not an object: %T", initResp["result"])
+	}
+	caps, ok := result["capabilities"].(map[string]any)
+	if !ok {
+		t.Fatalf("strict-false: capabilities missing or wrong type")
+	}
+	// Full capabilities must still be advertised.
+	if _, has := caps["completionProvider"]; !has {
+		t.Errorf("strict-false: completionProvider must be advertised; got caps=%v", caps)
+	}
+	if got := caps["hoverProvider"]; got != true {
+		t.Errorf("strict-false: hoverProvider = %v, want true", got)
+	}
+
+	write(map[string]any{"jsonrpc": "2.0", "method": "initialized", "params": map[string]any{}})
+	write(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "shutdown"})
+	_ = read() // shutdown response
+	write(map[string]any{"jsonrpc": "2.0", "method": "exit"})
+
+	if err := waitDone(5 * time.Second); err != nil {
+		t.Errorf("strict-false: Run returned error: %v", err)
+	}
+}
+
 // nopWriteCloser wraps an io.Writer so it satisfies io.WriteCloser with a no-op Close.
 type nopWriteCloser struct{ w io.Writer }
 
