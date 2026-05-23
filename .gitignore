@@ -1,0 +1,11 @@
+/bin
+*.test
+.envrc
+.DS_Store
+/coverage*
+
+# Block a top-level binary accidentally produced by `go build -o schemalock`.
+/schemalock
+
+# Per-developer agent context. Everything under .claude/ is local-only.
+.claude/

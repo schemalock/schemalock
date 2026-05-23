@@ -1,0 +1,79 @@
+version: 1
+registry: https://cdn.schemalock.dev
+generated_at: "2026-05-19T20:10:00Z"
+entries:
+- id: kubernetes/operator.victoriametrics.com@0.70.0
+  base: kubernetes/operator.victoriametrics.com/0.70.0/
+  schemas:
+    VLAgent:
+      integrity: sha256-fx/S630iNVDFJ7JNANmhgnlUScXXoK6vnqWM6VJvDjk=
+      size: 126683
+    VLCluster:
+      integrity: sha256-lDbMas4ef4sPhyD5CDQJ0irc9kak3jnGO6bizlmtfzU=
+      size: 226595
+    VLSingle:
+      integrity: sha256-KdFikIfmUEhff44NXjHV9gxVgFvzZki2oGgTPPPPlOk=
+      size: 64174
+    VLogs:
+      integrity: sha256-rs2z/9MO7JY2q7L8L8VM7jw+WzJKRAIMgImy4meR7bY=
+      size: 5032
+    VMAgent:
+      integrity: sha256-XgnxwEqecqLwdA+NpOPa+cQkQzeIl7Rtej1MwTM9xsM=
+      size: 341439
+    VMAlert:
+      integrity: sha256-UVLOxN9RS9S+L6l26KlfF/UhOtYgVP3GsOCXVIzRMhc=
+      size: 97502
+    VMAlertmanager:
+      integrity: sha256-Km0B0NHDAT9yZZMVcvkGwMHNhj2BHCLfzA6lo19+zsM=
+      size: 143174
+    VMAlertmanagerConfig:
+      integrity: sha256-3FAZtaUU6JlkUPQ0dsJCB6ofWKO7K1TyBL5T5FPsdKs=
+      size: 268072
+    VMAnomaly:
+      integrity: sha256-9PD4Mi1qQqTp495GZKImm0IW2ZwJSSqRfuIGdm64qPo=
+      size: 151235
+    VMAnomalyConfig:
+      integrity: sha256-89Ud1Ubezvcu/7iFcgQeVGJQgx7XlnRXCorQ6ismSzU=
+      size: 4803
+    VMAuth:
+      integrity: sha256-aZaOLFPZGokH4wLTL2gLbpGqRgSw65U4S2Ck/pRcX80=
+      size: 177219
+    VMCluster:
+      integrity: sha256-TyYfzBjOuzolTnCKOaKT4h44yhpgntQw77lb1TbCMG4=
+      size: 277136
+    VMDistributed:
+      integrity: sha256-EyI/weBDYXzYTWSAQiRHx1WfpDmQNWPmFX7sfWJqHRs=
+      size: 2025656
+    VMNodeScrape:
+      integrity: sha256-LHtu8ikIkQHgBVrdN55tcUtpqZmsMNjo1tmS4Jhe40U=
+      size: 50314
+    VMPodScrape:
+      integrity: sha256-95DHjy6L6OuyMk6fKdyex0E+FWRVGyOSf+YhNIOGbxA=
+      size: 59681
+    VMProbe:
+      integrity: sha256-XCoWVPy5KuMrZVZVkJdwgGZifj/znOH7x2BdF3F56oY=
+      size: 72439
+    VMRule:
+      integrity: sha256-ClPCsfTmYmQidfrt5oRwsMVErBR7ML7fEThRroCQTpo=
+      size: 11346
+    VMScrapeConfig:
+      integrity: sha256-rCM8wByvY0o02y7GckCxuVL2295grSTgBgJRnIBDUk4=
+      size: 492057
+    VMServiceScrape:
+      integrity: sha256-mFQuD0ylzG0YfZ9+HjseMZ6wmnTk2dOEfqERPlihStE=
+      size: 59941
+    VMSingle:
+      integrity: sha256-HjYbtTgQPNwhpI06dJo7AqHVOf2L2owTg9JQSuEo+ec=
+      size: 221196
+    VMStaticScrape:
+      integrity: sha256-NodO867TjUK5RhTMGhOgqrrNg0vZ/XJX3IWK+RWUGRg=
+      size: 54261
+    VMUser:
+      integrity: sha256-XOa8IJsqLP8cvhjbVBcGGpiZLIXiDfxZ3xKxj09xe8s=
+      size: 34196
+    VTCluster:
+      integrity: sha256-KOPj2mRIXoDesXGwUXW1XCOOOqfXRJKqfPhofA1Z55E=
+      size: 216070
+    VTSingle:
+      integrity: sha256-NPgi4fgzxeT1oshFulLMPF6QkRx+CkGHW0ukv/sY6Ts=
+      size: 54230

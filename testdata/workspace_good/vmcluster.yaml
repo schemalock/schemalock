@@ -1,0 +1,9 @@
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMCluster
+metadata:
+  name: demo-cluster
+  namespace: monitoring
+spec:
+  retentionPeriod: "1"
+  replicationFactor: 2
+  clusterVersion: "v1.101.0"

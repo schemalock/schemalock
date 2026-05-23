@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cdn.schemalock.dev/kubernetes/operator.victoriametrics.com/0.70.0/VMCluster.json",
+  "title": "VMCluster",
+  "description": "VMCluster is a high-available cluster version of VictoriaMetrics.",
+  "type": "object",
+  "required": [
+    "apiVersion",
+    "kind",
+    "metadata"
+  ],
+  "properties": {
+    "apiVersion": {
+      "type": "string",
+      "description": "APIVersion defines the versioned schema of this representation.",
+      "enum": [
+        "operator.victoriametrics.com/v1beta1"
+      ]
+    },
+    "kind": {
+      "type": "string",
+      "description": "Kind is a string value representing the REST resource this object represents.",
+      "enum": [
+        "VMCluster"
+      ]
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Standard object metadata.",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Name must be unique within a namespace."
+        },
+        "namespace": {
+          "type": "string",
+          "description": "Namespace defines the space within each name must be unique."
+        }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "description": "VMClusterSpec defines the desired state of VMCluster.",
+      "properties": {
+        "retentionPeriod": {
+          "type": "string",
+          "description": "RetentionPeriod for the stored metrics.",
+          "enum": [
+            "1d",
+            "7d",
+            "30d",
+            "90d",
+            "1y"
+          ]
+        },
+        "replicationFactor": {
+          "type": "integer",
+          "description": "ReplicationFactor defines how many copies of data to make."
+        },
+        "clusterVersion": {
+          "type": "string",
+          "description": "ClusterVersion defines the version of VictoriaMetrics cluster components."
+        }
+      }
+    }
+  }
+}

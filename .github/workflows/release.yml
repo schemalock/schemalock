@@ -1,0 +1,61 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: go test ./... -race
+
+      - name: Build binaries (5 targets)
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          build() {
+            local goos=$1 goarch=$2 name=$3 ext=${4:-}
+            echo "==> building ${name}${ext}"
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build \
+              -trimpath \
+              -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" \
+              -o "dist/${name}${ext}" \
+              ./cmd/schemalock
+          }
+
+          build linux  amd64 schemalock-linux-x64
+          build linux  arm64 schemalock-linux-arm64
+          build darwin amd64 schemalock-darwin-x64
+          build darwin arm64 schemalock-darwin-arm64
+          build windows amd64 schemalock-win32-x64 .exe
+
+      - name: Compute checksums
+        run: |
+          cd dist
+          sha256sum schemalock-* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            dist/schemalock-* dist/SHA256SUMS

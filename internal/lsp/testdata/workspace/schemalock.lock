@@ -1,0 +1,10 @@
+version: 1
+registry: https://cdn.schemalock.dev
+generated_at: "2026-05-19T00:00:00Z"
+entries:
+  - id: kubernetes/operator.victoriametrics.com@0.70.0
+    base: kubernetes/operator.victoriametrics.com/0.70.0/
+    schemas:
+      VMCluster:
+        integrity: sha256-VUkK0LLElcLCCYr17rSAV1hqNgNN2FJn146QTnpRs8I=
+        size: 1966
