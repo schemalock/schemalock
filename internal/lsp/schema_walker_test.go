@@ -444,10 +444,11 @@ func TestCompletionItemsForProperties_Deprecated(t *testing.T) {
 	}
 }
 
-// TestPositionAt_Outdent verifies positionAt's outdent walk-up: when the
-// cursor is on a blank line that is less indented than the deepest preceding
-// key, the walker climbs ancestors until it finds one at or shallower than
-// the cursor column, then offers that ancestor's siblings.
+// TestPositionAt_Outdent verifies positionAt's indent-stack classification:
+// when the cursor is on a blank line, the walker pops keys whose column is
+// >= an incoming key's column (the YAML scope-close rule), then picks the
+// deepest still-open key with column <= cursor column to determine whether
+// the cursor is a sibling of (col ==) or nested into (col <) that key.
 //
 // Fixture (0-based line numbers in comments):
 //
@@ -476,8 +477,10 @@ func TestPositionAt_Outdent(t *testing.T) {
 		wantExistingKeys []string
 	}{
 		{
-			// col 2 (LSP) = col 3 (yamldoc). best = /spec/inner/b at col 5.
-			// Walk: /spec/inner (col 3) → col 3 <= 3, return parent of /spec/inner = /spec.
+			// col 2 (LSP) = col 3 (yamldoc). Indent stack at line 7:
+			// [/spec(1), /spec/outer(3)] — outer(col 3 on line 6) closed inner.
+			// Deepest stack entry with col <= 3: /spec/outer at col 3.
+			// col 3 == 3 → sibling of /spec/outer. Parent = /spec.
 			name:             "OutdentToSpecLevel_BlankLineAtCol2",
 			line:             7, char: 2,
 			wantParent:       "/spec",
@@ -485,7 +488,9 @@ func TestPositionAt_Outdent(t *testing.T) {
 			wantExistingKeys: []string{"inner", "outer"},
 		},
 		{
-			// col 0 (LSP) = col 1 (yamldoc). Walk climbs past all ancestors → root.
+			// col 0 (LSP) = col 1 (yamldoc). Indent stack at line 7:
+			// [/spec(1), /spec/outer(3)]. Deepest entry with col <= 1: /spec at col 1.
+			// col 1 == 1 → sibling of /spec. Parent = "" (root completion).
 			name:             "OutdentToRoot_BlankLineAtCol0",
 			line:             7, char: 0,
 			wantParent:       "",
@@ -493,33 +498,140 @@ func TestPositionAt_Outdent(t *testing.T) {
 			wantExistingKeys: []string{"apiVersion", "kind", "spec"},
 		},
 		{
-			// col 1 (LSP) = col 2 (yamldoc). /spec is at col 1 (yamldoc).
-			// Walk: /spec/inner (col 3 > 2), /spec (col 1 <= 2) → parent of /spec = "".
+			// col 1 (LSP) = col 2 (yamldoc).
+			// Indent stack at line 7: [/spec(1), /spec/outer(3)].
+			// outer(col 3 at line 6) closed inner and its children — the stack never
+			// sees /spec/inner after /spec/outer is pushed.
+			// Deepest stack entry with col <= 2: /spec at col 1. col 1 < 2 → nest into
+			// /spec. ParentPointer = "/spec", ExistingKeys = ["inner","outer"].
 			name:             "OutdentMidIndent_Col1",
 			line:             7, char: 1,
-			wantParent:       "",
+			wantParent:       "/spec",
 			wantIsKey:        true,
-			wantExistingKeys: []string{"apiVersion", "kind", "spec"},
+			wantExistingKeys: []string{"inner", "outer"},
 		},
 		{
-			// Regression: col 4 (LSP) = col 5 (yamldoc) == best.srcPos.Column (5).
-			// best = /spec/inner/b; the == fast-path returns parent /spec/inner.
-			// Must be on the blank line (7) so the second pass fires, not the first.
+			// col 4 (LSP) = col 5 (yamldoc).
+			// Indent stack at line 7: [/spec(1), /spec/outer(3)].
+			// /spec/outer at col 3 (line 6) closed /spec/inner and its children —
+			// the old expected value (/spec/inner / ["a","b"]) pinned the bug.
+			// Deepest stack entry with col <= 5: /spec/outer at col 3. col 3 < 5
+			// → nest into /spec/outer. /spec/outer is a scalar ("3"), so ExistingKeys = [].
 			name:             "SiblingOfDeepest_BlankLineAtCol4",
 			line:             7, char: 4,
-			wantParent:       "/spec/inner",
-			wantIsKey:        true,
-			wantExistingKeys: []string{"a", "b"},
-		},
-		{
-			// Regression: col 6 (LSP) = col 7 (yamldoc) > best.srcPos.Column (5).
-			// Hits the > fast-path (children of /spec/inner/b, scalar → empty keys).
-			// Must be on the blank line (7) so the second pass fires, not the first.
-			name:             "NestIntoDeepest_BlankLineAtCol6",
-			line:             7, char: 6,
-			wantParent:       "/spec/inner/b",
+			wantParent:       "/spec/outer",
 			wantIsKey:        true,
 			wantExistingKeys: []string{},
+		},
+		{
+			// col 6 (LSP) = col 7 (yamldoc).
+			// Indent stack at line 7: [/spec(1), /spec/outer(3)].
+			// /spec/outer at col 3 (line 6) closed /spec/inner and its children —
+			// the old expected value (/spec/inner/b) pinned the bug.
+			// Deepest stack entry with col <= 7: /spec/outer at col 3. col 3 < 7
+			// → nest into /spec/outer. /spec/outer is a scalar ("3"), so ExistingKeys = [].
+			name:             "NestIntoDeepest_BlankLineAtCol6",
+			line:             7, char: 6,
+			wantParent:       "/spec/outer",
+			wantIsKey:        true,
+			wantExistingKeys: []string{},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			pos := lspprot.Position{Line: uint32(tc.line), Character: uint32(tc.char)}
+			ctx := positionAt(pos, doc)
+
+			if ctx.ParentPointer != tc.wantParent {
+				t.Errorf("ParentPointer = %q, want %q", ctx.ParentPointer, tc.wantParent)
+			}
+			if ctx.IsKeyPosition != tc.wantIsKey {
+				t.Errorf("IsKeyPosition = %v, want %v", ctx.IsKeyPosition, tc.wantIsKey)
+			}
+			gotKeys := append([]string(nil), ctx.ExistingKeys...)
+			wantKeys := append([]string(nil), tc.wantExistingKeys...)
+			sort.Strings(gotKeys)
+			sort.Strings(wantKeys)
+			if len(gotKeys) != len(wantKeys) {
+				t.Errorf("ExistingKeys = %v, want %v", gotKeys, wantKeys)
+			} else {
+				for i := range wantKeys {
+					if gotKeys[i] != wantKeys[i] {
+						t.Errorf("ExistingKeys[%d] = %q, want %q", i, gotKeys[i], wantKeys[i])
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestPositionAt_ClosingSiblings is the regression test for the closing-siblings
+// bug: when a later sibling key at a shallower column closes an ancestor's scope,
+// positionAt must not treat that ancestor as still-open. This exercises the
+// indent-stack algorithm that replaced the old pointer-ancestry walk.
+//
+// Fixture (0-based line numbers, 1-based yamldoc columns):
+//
+//	line 0: spec:                   col 1
+//	line 1:   outer:                col 3
+//	line 2:     arr:                col 5
+//	line 3:       - g: 1            arr-item col 7, g col 9
+//	line 4:         k: 2            k col 9
+//	line 5:     after: 3            after col 5  (closes arr and its children)
+//	line 6:   next:                 next col 3   (closes outer and its children)
+//	line 7: (blank — the test cursor target)
+//
+// Stack at line 7: [/spec(1), /spec/next(3)].
+func TestPositionAt_ClosingSiblings(t *testing.T) {
+	yamlFixture := "spec:\n  outer:\n    arr:\n      - g: 1\n        k: 2\n    after: 3\n  next:\n"
+
+	docs, err := yamldoc.Parse([]byte(yamlFixture))
+	if err != nil || len(docs) == 0 {
+		t.Fatalf("failed to parse fixture YAML: %v", err)
+	}
+	doc := docs[0]
+
+	tests := []struct {
+		name             string
+		line, char       int
+		wantParent       string
+		wantIsKey        bool
+		wantExistingKeys []string
+	}{
+		{
+			// col 4 (LSP) = col 5 (yamldoc).
+			// Stack: [/spec(1), /spec/next(3)].
+			// Deepest entry with col <= 5: /spec/next at col 3. col 3 < 5 → nest into
+			// /spec/next. Without the fix, the old walk would find /spec/outer/after
+			// at col 5 as the deepest key and return /spec/outer (closed by /spec/next).
+			name:             "NestIntoNext_NotIntoClosedAfter",
+			line:             7, char: 4,
+			wantParent:       "/spec/next",
+			wantIsKey:        true,
+			wantExistingKeys: []string{},
+		},
+		{
+			// col 2 (LSP) = col 3 (yamldoc).
+			// Stack: [/spec(1), /spec/next(3)].
+			// Deepest entry with col <= 3: /spec/next at col 3. col 3 == 3 → sibling
+			// of /spec/next. Parent = /spec. ExistingKeys at /spec = ["next","outer"].
+			name:             "SiblingOfNext_NotInsideClosedOuter",
+			line:             7, char: 2,
+			wantParent:       "/spec",
+			wantIsKey:        true,
+			wantExistingKeys: []string{"next", "outer"},
+		},
+		{
+			// col 0 (LSP) = col 1 (yamldoc).
+			// Stack: [/spec(1), /spec/next(3)].
+			// Deepest entry with col <= 1: /spec at col 1. col 1 == 1 → sibling of
+			// /spec. Parent = "". ExistingKeys at root = ["spec"].
+			name:             "OutdentToRoot",
+			line:             7, char: 0,
+			wantParent:       "",
+			wantIsKey:        true,
+			wantExistingKeys: []string{"spec"},
 		},
 	}
 
