@@ -355,6 +355,9 @@ func completionItemsForProperties(sch *jsonschema.Schema, existingKeys []string)
 		default:
 			item.InsertText = name + ": "
 		}
+		// FilterText ensures VS Code's client-side filter matches the bare
+		// property name regardless of the InsertText snippet shape.
+		item.FilterText = name
 		items = append(items, item)
 	}
 
@@ -427,11 +430,13 @@ func completionItemsForEnum(sch *jsonschema.Schema, parentDetail string) []lsp.C
 		}
 		// SortText preserves schema declaration order, which is meaningful for
 		// JSON Schema enums (first value is often the default/most common).
+		// FilterText ensures VS Code's client-side filter matches the label.
 		items = append(items, lsp.CompletionItem{
-			Label:    label,
-			Kind:     completionKindEnumMember,
-			SortText: fmt.Sprintf("%04d_%s", i, label),
-			Detail:   parentDetail,
+			Label:      label,
+			Kind:       completionKindEnumMember,
+			SortText:   fmt.Sprintf("%04d_%s", i, label),
+			Detail:     parentDetail,
+			FilterText: label,
 		})
 	}
 	// Declaration order is preserved via SortText; no secondary alphabetical

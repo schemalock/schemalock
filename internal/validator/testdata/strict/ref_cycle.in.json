@@ -1,0 +1,1 @@
+{"$defs":{"Foo":{"type":"object","properties":{"bar":{"$ref":"#/$defs/Bar"}}},"Bar":{"type":"object","properties":{"foo":{"$ref":"#/$defs/Foo"}}}},"$ref":"#/$defs/Foo"}

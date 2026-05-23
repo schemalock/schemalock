@@ -1,0 +1,1 @@
+{"oneOf":[{"properties":{"a":{"type":"string"}}},{"properties":{"b":{"type":"integer"}}}],"allOf":[{"properties":{"c":{"type":"string"}}}],"anyOf":[{"properties":{"d":{"type":"boolean"}}}]}

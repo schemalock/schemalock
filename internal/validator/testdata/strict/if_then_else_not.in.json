@@ -1,0 +1,1 @@
+{"if":{"properties":{"x":{"type":"string"}}},"then":{"properties":{"y":{"type":"integer"}}},"else":{"properties":{"z":{"type":"boolean"}}},"not":{"properties":{"w":{"type":"null"}}}}

@@ -1525,12 +1525,11 @@ func TestWatchedFiles_ReloadsLockfile(t *testing.T) {
 	s.waitDone(t, 3*time.Second)
 }
 
-// TestCompletion_IsIncompleteTrue_WhenItemsPresent verifies that when the
+// TestCompletion_IsIncompleteFalse_WhenItemsPresent verifies that when the
 // server returns a non-empty completion list (property names at a key position),
-// the CompletionList.isIncomplete field is true. This signals to the client
-// that it should trust the server's SortText ordering and not apply its own
-// fuzzy-ranking on top.
-func TestCompletion_IsIncompleteTrue_WhenItemsPresent(t *testing.T) {
+// the CompletionList.isIncomplete field is false so VS Code filters locally
+// against the returned items as the user types rather than re-querying the server.
+func TestCompletion_IsIncompleteFalse_WhenItemsPresent(t *testing.T) {
 	workspaceDir, err := filepath.Abs("testdata/workspace")
 	if err != nil {
 		t.Fatal(err)
@@ -1565,8 +1564,19 @@ func TestCompletion_IsIncompleteTrue_WhenItemsPresent(t *testing.T) {
 	if len(items) == 0 {
 		t.Fatal("expected non-empty items list for this completion position")
 	}
-	if result["isIncomplete"] != true {
-		t.Errorf("isIncomplete = %v, want true (server must signal trust-server-order)", result["isIncomplete"])
+	if result["isIncomplete"] != false {
+		t.Errorf("isIncomplete = %v, want false (VS Code must filter locally as user types)", result["isIncomplete"])
+	}
+	// Each item must have filterText == label so client-side filtering matches
+	// the bare property name regardless of the snippet InsertText shape.
+	for _, it := range items {
+		m, ok := it.(map[string]any)
+		if !ok {
+			continue
+		}
+		if m["filterText"] != m["label"] {
+			t.Errorf("filterText %v, want label %v", m["filterText"], m["label"])
+		}
 	}
 
 	s.send(t, makeShutdownReq(101))
@@ -1575,10 +1585,10 @@ func TestCompletion_IsIncompleteTrue_WhenItemsPresent(t *testing.T) {
 	s.waitDone(t, 3*time.Second)
 }
 
-// TestCompletion_IsIncompleteTrue_EnumValues verifies that when the server
-// returns enum completion values, isIncomplete is also true so the client
-// trusts the schema declaration order conveyed via SortText.
-func TestCompletion_IsIncompleteTrue_EnumValues(t *testing.T) {
+// TestCompletion_IsIncompleteFalse_EnumValues verifies that when the server
+// returns enum completion values, isIncomplete is false so VS Code filters
+// locally as the user types.
+func TestCompletion_IsIncompleteFalse_EnumValues(t *testing.T) {
 	workspaceDir, err := filepath.Abs("testdata/workspace")
 	if err != nil {
 		t.Fatal(err)
@@ -1612,8 +1622,18 @@ func TestCompletion_IsIncompleteTrue_EnumValues(t *testing.T) {
 	if len(items) == 0 {
 		t.Fatal("expected non-empty enum items for retentionPeriod")
 	}
-	if result["isIncomplete"] != true {
-		t.Errorf("isIncomplete = %v, want true for enum completion", result["isIncomplete"])
+	if result["isIncomplete"] != false {
+		t.Errorf("isIncomplete = %v, want false for enum completion", result["isIncomplete"])
+	}
+	// Each enum item must have filterText == label.
+	for _, it := range items {
+		m, ok := it.(map[string]any)
+		if !ok {
+			continue
+		}
+		if m["filterText"] != m["label"] {
+			t.Errorf("filterText %v, want label %v", m["filterText"], m["label"])
+		}
 	}
 
 	s.send(t, makeShutdownReq(111))
@@ -1673,7 +1693,7 @@ func TestCompletion_IsIncompleteFalse_WhenEmpty(t *testing.T) {
 // TestCompletion_KindBootstrap verifies the bootstrap kind-value completion
 // path: opening a YAML with apiVersion set but kind empty, then sending a
 // completion request at the kind value position, returns a non-empty list of
-// Kind names for the apiVersion's group with isIncomplete=true.
+// Kind names for the apiVersion's group with isIncomplete=false.
 //
 // Cursor is at LSP (line=1, char=5) — just past the "kind:" separator on line
 // 1 (0-based). positionAt maps this to the value position of /kind
@@ -1726,11 +1746,10 @@ func TestCompletion_KindBootstrap(t *testing.T) {
 		t.Fatal("expected non-empty kind bootstrap completion list, got 0 items")
 	}
 
-	// isIncomplete must be true — bootstrap uses IsIncomplete: true to match the
-	// other completion branches and to prevent the M4 client filterText middleware
-	// from fuzzy-filtering the list.
-	if result["isIncomplete"] != true {
-		t.Errorf("isIncomplete = %v, want true for bootstrap kind completion", result["isIncomplete"])
+	// isIncomplete must be false — bootstrap completions use a closed list so
+	// VS Code filters locally as the user types.
+	if result["isIncomplete"] != false {
+		t.Errorf("isIncomplete = %v, want false for bootstrap kind completion", result["isIncomplete"])
 	}
 
 	// At least VMCluster must appear (it is in the testdata lockfile).

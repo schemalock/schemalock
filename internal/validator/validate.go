@@ -7,9 +7,19 @@ import (
 	"strings"
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
+	"github.com/santhosh-tekuri/jsonschema/v6/kind"
 
 	"github.com/schemalock/app/internal/yamldoc"
 )
+
+// escapePointerSegment applies RFC 6901 escaping to a single JSON Pointer
+// segment: "~" → "~0", "/" → "~1". Order matters: "~" must be replaced before
+// "/".
+func escapePointerSegment(seg string) string {
+	seg = strings.ReplaceAll(seg, "~", "~0")
+	seg = strings.ReplaceAll(seg, "/", "~1")
+	return seg
+}
 
 // Position is a 1-based source location, mirroring yamldoc.Position.
 // It is re-declared here so that callers can import only internal/validator
@@ -98,16 +108,44 @@ func Validate(compiled *jsonschema.Schema, doc yamldoc.Document) []Diagnostic {
 
 // collectDiagnostics performs a depth-first walk of the ValidationError tree,
 // collecting one Diagnostic per leaf error (errors with no Causes).
+//
+// For additionalProperties leaf errors, the library reports a single error at
+// the parent object with the list of unknown property names. This function fans
+// out into one diagnostic per unknown property, each anchored at the child
+// pointer "<parent>/<name>" when present in doc.Nodes. If the child pointer is
+// absent (e.g. the unknown field is on the final line with no trailing newline
+// and the parser did not record it), the diagnostic falls back to the parent's
+// position so the diagnostic is never silently lost.
 func collectDiagnostics(e *jsonschema.ValidationError, nodes yamldoc.PositionMap, out *[]Diagnostic) {
 	if len(e.Causes) == 0 {
-		// Leaf error — emit a diagnostic.
+		// Leaf error — check for additionalProperties first.
+		if ap, ok := e.ErrorKind.(*kind.AdditionalProperties); ok && len(ap.Properties) > 0 {
+			parentPtr := instanceLocationToPointer(e.InstanceLocation)
+			// Sort names for deterministic output before the outer sort runs.
+			names := append([]string(nil), ap.Properties...)
+			sort.Strings(names)
+			for _, name := range names {
+				childPtr := parentPtr + "/" + escapePointerSegment(name)
+				pos, hit := nodes[childPtr]
+				if !hit {
+					pos = lookupPosition(parentPtr, nodes)
+				}
+				*out = append(*out, Diagnostic{
+					Range:    rangeAt(pos),
+					Severity: 1,
+					Message:  fmt.Sprintf("unknown field '%s' (not in schema; disable with schemalock.strict=false)", name),
+					Source:   "schemalock",
+				})
+			}
+			return
+		}
+		// Non-AP leaf: emit a single diagnostic at the instance location.
 		ptr := instanceLocationToPointer(e.InstanceLocation)
 		pos := lookupPosition(ptr, nodes)
-		msg := e.Error()
 		*out = append(*out, Diagnostic{
 			Range:    rangeAt(pos),
 			Severity: 1,
-			Message:  msg,
+			Message:  e.Error(),
 			Source:   "schemalock",
 		})
 		return
@@ -126,10 +164,7 @@ func instanceLocationToPointer(loc []string) string {
 	var sb strings.Builder
 	for _, seg := range loc {
 		sb.WriteByte('/')
-		// RFC 6901 escaping: ~ → ~0, / → ~1.
-		seg = strings.ReplaceAll(seg, "~", "~0")
-		seg = strings.ReplaceAll(seg, "/", "~1")
-		sb.WriteString(seg)
+		sb.WriteString(escapePointerSegment(seg))
 	}
 	return sb.String()
 }
