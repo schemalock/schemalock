@@ -41,11 +41,14 @@ type cursorContext struct {
 //     - If found, compare the cursor character against the key's column to
 //     determine whether the cursor is on the key (IsKeyPosition=true) or
 //     past the ":" separator (value position, IsKeyPosition=false).
-//  3. If no key is on the cursor line, the cursor is inside a block value.
-//     Find the deepest key with a line number less than the cursor line.
-//  4. If the cursor column is strictly less than `best`'s column, walk
-//     up best's ancestors until one is at or shallower than the cursor.
-//     Offer that ancestor's siblings (children of its parent).
+//  3. If no key is on the cursor line, build the indent stack of
+//     currently-open keys at cursor.line (forward scan, popping any
+//     stack top whose column >= the incoming key's column).
+//  4. Classify the cursor column against the stack:
+//     - if the deepest open key K has K.col == cursor.col → sibling of K
+//       (parent of K's children);
+//     - if K.col < cursor.col → nest into K (offer K's children);
+//     - if no open key has K.col <= cursor.col → root completion.
 func positionAt(pos lsp.Position, doc yamldoc.Document) cursorContext {
 	// LSP is 0-based; yamldoc is 1-based.
 	targetLine := int(pos.Line) + 1
@@ -112,81 +115,72 @@ func positionAt(pos lsp.Position, doc yamldoc.Document) cursorContext {
 	}
 
 	// Second pass: cursor is inside a multi-line block value.
-	// Find the deepest key whose line is strictly less than the cursor line.
-	best := entry{pointer: "", depth: -1}
+	// Build the indent stack of currently-open keys at cursor.line by
+	// walking keys above the cursor in line order. A key at column <= the
+	// top of the stack closes the top's scope (standard indentation-stack
+	// rule). This correctly handles closing siblings: a key that closes a
+	// deeper scope is visible here, unlike the old pointer-chain walk which
+	// had no visibility into predecessor relationships.
+	type openKey struct {
+		pointer string
+		column  int
+	}
+	// entries is sorted by line ascending; the depth-desc tiebreaker is
+	// harmless because two keys never share a line in well-formed YAML.
+	var stack []openKey
 	for _, e := range entries {
 		if e.srcPos.Line >= targetLine {
-			continue
+			break // entries is sorted; no more candidates
 		}
-		if e.depth > best.depth || (e.depth == best.depth && e.srcPos.Line > best.srcPos.Line) {
-			best = e
+		for len(stack) > 0 && stack[len(stack)-1].column >= e.srcPos.Column {
+			stack = stack[:len(stack)-1]
+		}
+		stack = append(stack, openKey{pointer: e.pointer, column: e.srcPos.Column})
+	}
+
+	if len(stack) == 0 {
+		// No keys precede the cursor — root completion.
+		return cursorContext{
+			ParentPointer: "",
+			IsKeyPosition: true,
+			ExistingKeys:  existingKeysAt("", doc),
 		}
 	}
 
-	if best.pointer == "" {
-		// Cursor is before any known key.
-		return cursorContext{}
+	// Find the deepest open key with column <= cursor.col.
+	idx := -1
+	for i := len(stack) - 1; i >= 0; i-- {
+		if stack[i].column <= targetCol {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		// Cursor is outdented past every open key — root completion.
+		return cursorContext{
+			ParentPointer: "",
+			IsKeyPosition: true,
+			ExistingKeys:  existingKeysAt("", doc),
+		}
 	}
 
-	// Blank-line new-sibling case: cursor on an empty line at the same
-	// indent as an existing key. The user is adding a new property at that
-	// level — offer sibling completions of `best`'s parent.
-	if targetCol == best.srcPos.Column {
-		parent := parentPointer(best.pointer)
+	k := stack[idx]
+	if k.column == targetCol {
+		// Cursor is at the same column as k → sibling of k.
+		// Offer k's parent's properties (siblings of k).
+		parent := parentPointer(k.pointer)
 		return cursorContext{
 			ParentPointer: parent,
 			IsKeyPosition: true,
 			ExistingKeys:  existingKeysAt(parent, doc),
 		}
 	}
-
-	// Blank-line nest-into-best case: cursor on an empty line deeper than
-	// the deepest key above. The user is adding the first child key of
-	// `best` (an object whose value block is otherwise empty). Offer the
-	// child properties of best's schema.
-	//
-	// schemaPropertiesAt(root, best.pointer) returns the object schema at
-	// best.pointer; if best is a scalar field the completion list ends up
-	// empty (harmless — VS Code shows "No suggestions").
-	if targetCol > best.srcPos.Column {
-		return cursorContext{
-			ParentPointer: best.pointer,
-			IsKeyPosition: true,
-			ExistingKeys:  existingKeysAt(best.pointer, doc),
-		}
-	}
-
-	// targetCol < best.srcPos.Column → outdent.
-	// Walk up best's ancestor chain until an ancestor whose column is at
-	// or shallower than targetCol. That ancestor shares the cursor's level
-	// (or encloses it); offer that ancestor's siblings (children of its
-	// parent), with existing keys filtered.
-	//
-	// If no ancestor satisfies the constraint (cursor outdented past root),
-	// fall back to root-level completions: ParentPointer = "".
-	anc := parentPointer(best.pointer)
-	for anc != "" {
-		ancPos, ok := doc.Nodes[anc]
-		if !ok {
-			// Defensive: PositionMap missing an ancestor — climb one more level.
-			anc = parentPointer(anc)
-			continue
-		}
-		if ancPos.Column <= targetCol {
-			parent := parentPointer(anc)
-			return cursorContext{
-				ParentPointer: parent,
-				IsKeyPosition: true,
-				ExistingKeys:  existingKeysAt(parent, doc),
-			}
-		}
-		anc = parentPointer(anc)
-	}
-	// Walked past root: offer root-level siblings.
+	// k.column < targetCol → cursor is nested inside k.
+	// Offer k's children.
 	return cursorContext{
-		ParentPointer: "",
+		ParentPointer: k.pointer,
 		IsKeyPosition: true,
-		ExistingKeys:  existingKeysAt("", doc),
+		ExistingKeys:  existingKeysAt(k.pointer, doc),
 	}
 }
 
