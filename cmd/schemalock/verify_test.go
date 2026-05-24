@@ -3,8 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
-	"errors"
+	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,329 +12,160 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/schemalock/app/internal/lockfile"
 	"github.com/schemalock/app/internal/registry"
 )
 
-// buildTestLockfile writes a schemalock.lock to dir/schemalock.lock with
-// a single entry for kubernetes/operator.victoriametrics.com@0.70.0 and the
-// provided schemas.
-func buildTestLockfile(t *testing.T, dir string, schemas map[string]lockfile.SchemaEntry, registryURL string) string {
+// startSchemaCDN serves versions.json + manifest.json + per-kind schemas for
+// the operator.victoriametrics.com group at versions 0.70.0 and 0.69.0.
+// Schema is permissive (`type: object`) — every object validates.
+func startSchemaCDN(t *testing.T) *httptest.Server {
 	t.Helper()
-	lf := lockfile.LockFile{
-		Version:     1,
-		Registry:    registryURL,
-		GeneratedAt: "2026-05-18T00:00:00Z",
-		Entries: []lockfile.LockEntry{
-			{
-				ID:      "kubernetes/operator.victoriametrics.com@0.70.0",
-				Base:    "kubernetes/operator.victoriametrics.com/0.70.0/",
-				Schemas: schemas,
-			},
-		},
-	}
-	encoded, err := lockfile.EncodeLock(lf)
-	if err != nil {
-		t.Fatalf("EncodeLock: %v", err)
-	}
-	lockPath := filepath.Join(dir, "schemalock.lock")
-	if err := os.WriteFile(lockPath, encoded, 0o644); err != nil {
-		t.Fatalf("write lockfile: %v", err)
-	}
-	return lockPath
-}
+	mux := http.NewServeMux()
+	// Schema requires top-level "metadata" object — strict enough that we can
+	// reliably trigger validation failures from tests by omitting it.
+	permissive := []byte(`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","required":["metadata"],"properties":{"metadata":{"type":"object"}}}`)
+	integrity := registry.ComputeIntegrity(permissive)
+	size := len(permissive)
 
-// buildTestIntent writes a schemalock.yaml to dir/schemalock.yaml.
-func buildTestIntent(t *testing.T, dir string, entries []string) string {
-	t.Helper()
-	var sb strings.Builder
-	sb.WriteString("version: 1\necosystems:\n  kubernetes:\n")
-	for _, e := range entries {
-		sb.WriteString("    - " + e + "\n")
+	mux.HandleFunc("/kubernetes/operator.victoriametrics.com/versions.json",
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`["0.70.0","0.69.0"]`))
+		})
+	for _, v := range []string{"0.70.0", "0.69.0"} {
+		v := v
+		mux.HandleFunc("/kubernetes/operator.victoriametrics.com/"+v+"/manifest.json",
+			func(w http.ResponseWriter, r *http.Request) {
+				body := fmt.Sprintf(`{"version":1,"kinds":{"VMCluster":{"integrity":%q,"size":%d}}}`,
+					integrity, size)
+				_, _ = w.Write([]byte(body))
+			})
+		mux.HandleFunc("/kubernetes/operator.victoriametrics.com/"+v+"/VMCluster.json",
+			func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write(permissive)
+			})
 	}
-	intentPath := filepath.Join(dir, "schemalock.yaml")
-	if err := os.WriteFile(intentPath, []byte(sb.String()), 0o644); err != nil {
-		t.Fatalf("write intent: %v", err)
-	}
-	return intentPath
-}
 
-// serveManifest returns an httptest server that serves the given kinds at the
-// standard kubernetes/operator.victoriametrics.com/0.70.0/manifest.json path.
-func serveManifest(t *testing.T, kinds map[string]registry.KindEntry) *httptest.Server {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		const wantPath = "/kubernetes/operator.victoriametrics.com/0.70.0/manifest.json"
-		if r.URL.Path != wantPath {
-			http.NotFound(w, r)
-			return
-		}
-		m := registry.Manifest{Version: 1, Kinds: kinds}
-		b, err := json.Marshal(m)
-		if err != nil {
-			http.Error(w, "marshal error", http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(b)
-	}))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
 	return srv
 }
 
-// TestRunVerify_MissingLockfile verifies that a missing schemalock.lock returns
-// ErrUsage (not ErrDrift) with a helpful message guiding the user.
-func TestRunVerify_MissingLockfile(t *testing.T) {
-	dir := t.TempDir()
-	intentPath := buildTestIntent(t, dir, []string{"operator.victoriametrics.com@0.70.0"})
-	lockPath := filepath.Join(dir, "schemalock.lock") // does not exist
+func TestRunVerify_validatesAllManifestsUnderPath(t *testing.T) {
+	srv := startSchemaCDN(t)
+	root := copyFixture(t, "testdata/repo_hierarchy")
 
 	var stdout, stderr bytes.Buffer
 	err := runVerify(context.Background(),
-		[]string{
-			"--file=" + intentPath,
-			"--lockfile=" + lockPath,
-			"--registry=https://cdn.schemalock.dev",
-		},
-		&stdout, &stderr,
-	)
-	if err == nil {
-		t.Fatal("expected error for missing lockfile, got nil")
-	}
-	if !errors.Is(err, ErrUsage) {
-		t.Errorf("expected ErrUsage, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), lockPath) {
-		t.Errorf("error message %q should contain lockfile path %s", err.Error(), lockPath)
-	}
-}
-
-// TestRunVerify_MultipleDrifts verifies that two simultaneous integrity drifts
-// in the same lockfile entry are both reported (collect-all, no fail-fast).
-func TestRunVerify_MultipleDrifts(t *testing.T) {
-	// Live manifest has different integrity for both VMCluster and VMSingle.
-	liveKinds := map[string]registry.KindEntry{
-		"VMCluster": {Integrity: "sha256-CHANGED1", Size: 1000},
-		"VMSingle":  {Integrity: "sha256-CHANGED2", Size: 2000},
-	}
-	srv := serveManifest(t, liveKinds)
-	defer srv.Close()
-
-	dir := t.TempDir()
-	// Lockfile has original integrity for both kinds.
-	schemas := map[string]lockfile.SchemaEntry{
-		"VMCluster": {Integrity: "sha256-AAAA", Size: 1000},
-		"VMSingle":  {Integrity: "sha256-BBBB", Size: 2000},
-	}
-	lockPath := buildTestLockfile(t, dir, schemas, srv.URL)
-	intentPath := buildTestIntent(t, dir, []string{"operator.victoriametrics.com@0.70.0"})
-
-	var stdout, stderr bytes.Buffer
-	err := runVerify(context.Background(),
-		[]string{
-			"--file=" + intentPath,
-			"--lockfile=" + lockPath,
-			"--registry=" + srv.URL,
-		},
-		&stdout, &stderr,
-	)
-	if err == nil {
-		t.Fatal("expected error for drift, got nil")
-	}
-	if !errors.Is(err, ErrDrift) {
-		t.Errorf("expected ErrDrift, got: %v", err)
-	}
-	if count := strings.Count(stdout.String(), "drift:"); count < 2 {
-		t.Errorf("stdout should contain at least 2 'drift:' lines, got %d\nstdout: %s", count, stdout.String())
-	}
-}
-
-// TestRunVerify_CleanState verifies exit 0 and "ok:" message when intent,
-// lockfile, and live manifest are all consistent.
-func TestRunVerify_CleanState(t *testing.T) {
-	kinds := map[string]registry.KindEntry{
-		"VMCluster": {Integrity: "sha256-AAAA", Size: 1000},
-		"VMSingle":  {Integrity: "sha256-BBBB", Size: 2000},
-	}
-	srv := serveManifest(t, kinds)
-	defer srv.Close()
-
-	dir := t.TempDir()
-	schemas := map[string]lockfile.SchemaEntry{
-		"VMCluster": {Integrity: "sha256-AAAA", Size: 1000},
-		"VMSingle":  {Integrity: "sha256-BBBB", Size: 2000},
-	}
-	lockPath := buildTestLockfile(t, dir, schemas, srv.URL)
-	intentPath := buildTestIntent(t, dir, []string{"operator.victoriametrics.com@0.70.0"})
-
-	var stdout, stderr bytes.Buffer
-	err := runVerify(context.Background(),
-		[]string{
-			"--file=" + intentPath,
-			"--lockfile=" + lockPath,
-			"--registry=" + srv.URL,
-		},
-		&stdout, &stderr,
-	)
+		[]string{"--path", root, "--registry", srv.URL, "--cache-dir", t.TempDir()},
+		&stdout, &stderr)
 	if err != nil {
-		t.Fatalf("runVerify returned error: %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
+		t.Fatalf("runVerify: %v (stderr=%s; stdout=%s)", err, stderr.String(), stdout.String())
 	}
-	if !strings.Contains(stdout.String(), "ok:") {
-		t.Errorf("stdout %q should contain 'ok:'", stdout.String())
+	out := stdout.String()
+	if !strings.Contains(out, "manifests/vm.yaml") {
+		t.Errorf("missing root-pin file in output: %s", out)
+	}
+	if !strings.Contains(out, "teamA/vm.yaml") {
+		t.Errorf("missing overlay-pin file in output: %s", out)
 	}
 }
 
-// TestRunVerify_IntegrityDrift verifies exit 2 and a "drift:" line when the
-// live manifest has a different integrity for one Kind.
-func TestRunVerify_IntegrityDrift(t *testing.T) {
-	// Live manifest has a different integrity for VMCluster.
-	liveKinds := map[string]registry.KindEntry{
-		"VMCluster": {Integrity: "sha256-CHANGED", Size: 1000},
-		"VMSingle":  {Integrity: "sha256-BBBB", Size: 2000},
-	}
-	srv := serveManifest(t, liveKinds)
-	defer srv.Close()
+func TestRunVerify_failsOnInvalidManifest(t *testing.T) {
+	srv := startSchemaCDN(t)
+	root := copyFixture(t, "testdata/repo_hierarchy")
 
-	dir := t.TempDir()
-	// Lockfile has original integrity.
-	schemas := map[string]lockfile.SchemaEntry{
-		"VMCluster": {Integrity: "sha256-AAAA", Size: 1000},
-		"VMSingle":  {Integrity: "sha256-BBBB", Size: 2000},
+	// Manifest missing required `metadata` field — schema rejects it.
+	if err := os.WriteFile(filepath.Join(root, "teamA", "vm.yaml"),
+		[]byte(`apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMCluster
+spec:
+  retentionPeriod: "1d"
+`), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	lockPath := buildTestLockfile(t, dir, schemas, srv.URL)
-	intentPath := buildTestIntent(t, dir, []string{"operator.victoriametrics.com@0.70.0"})
 
 	var stdout, stderr bytes.Buffer
 	err := runVerify(context.Background(),
-		[]string{
-			"--file=" + intentPath,
-			"--lockfile=" + lockPath,
-			"--registry=" + srv.URL,
-		},
-		&stdout, &stderr,
-	)
+		[]string{"--path", root, "--registry", srv.URL, "--cache-dir", t.TempDir()},
+		&stdout, &stderr)
 	if err == nil {
-		t.Fatal("expected error for drift, got nil")
-	}
-	if !errors.Is(err, ErrDrift) {
-		t.Errorf("expected ErrDrift, got: %v", err)
-	}
-	if exitCodeFor(err) != 2 {
-		t.Errorf("exitCodeFor = %d, want 2", exitCodeFor(err))
-	}
-	if !strings.Contains(stdout.String(), "drift:") {
-		t.Errorf("stdout %q should contain 'drift:'", stdout.String())
-	}
-	if !strings.Contains(stdout.String(), "VMCluster") {
-		t.Errorf("stdout %q should name the drifted Kind VMCluster", stdout.String())
+		t.Fatalf("runVerify should fail; stdout=%s", stdout.String())
 	}
 }
 
-// TestRunVerify_NewIntentEntryNotInLockfile verifies exit 2 when a new entry
-// exists in schemalock.yaml but is absent from schemalock.lock.
-func TestRunVerify_NewIntentEntryNotInLockfile(t *testing.T) {
-	kinds := map[string]registry.KindEntry{
-		"VMCluster": {Integrity: "sha256-AAAA", Size: 1000},
+func TestRunVerify_unpinnedKindIsWarningNotError(t *testing.T) {
+	srv := startSchemaCDN(t)
+	// A directory with no schemalock.yaml anywhere in its parent chain (use
+	// a t.TempDir below /tmp so the walker walks to / and finds nothing).
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "vm.yaml"),
+		[]byte(`apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMCluster
+metadata: { name: x }
+`), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	srv := serveManifest(t, kinds)
-	defer srv.Close()
-
-	dir := t.TempDir()
-	// Lockfile only has one entry.
-	schemas := map[string]lockfile.SchemaEntry{
-		"VMCluster": {Integrity: "sha256-AAAA", Size: 1000},
-	}
-	lockPath := buildTestLockfile(t, dir, schemas, srv.URL)
-	// Intent has an extra entry not in the lockfile.
-	intentPath := buildTestIntent(t, dir, []string{
-		"operator.victoriametrics.com@0.70.0",
-		"another.group.io@1.0.0",
-	})
 
 	var stdout, stderr bytes.Buffer
 	err := runVerify(context.Background(),
-		[]string{
-			"--file=" + intentPath,
-			"--lockfile=" + lockPath,
-			"--registry=" + srv.URL,
-		},
-		&stdout, &stderr,
-	)
-	if err == nil {
-		t.Fatal("expected error for extra intent entry, got nil")
-	}
-	if !errors.Is(err, ErrDrift) {
-		t.Errorf("expected ErrDrift, got: %v", err)
-	}
-	if exitCodeFor(err) != 2 {
-		t.Errorf("exitCodeFor = %d, want 2", exitCodeFor(err))
-	}
-	if !strings.Contains(stdout.String(), "drift:") {
-		t.Errorf("stdout %q should contain 'drift:'", stdout.String())
-	}
-}
-
-// TestRunVerify_StaleLockfileEntryNotInIntent verifies exit 2 when the
-// lockfile has an entry that is no longer in schemalock.yaml.
-func TestRunVerify_StaleLockfileEntryNotInIntent(t *testing.T) {
-	kinds := map[string]registry.KindEntry{
-		"VMCluster": {Integrity: "sha256-AAAA", Size: 1000},
-	}
-	srv := serveManifest(t, kinds)
-	defer srv.Close()
-
-	dir := t.TempDir()
-	// Lockfile has an extra entry not in the intent.
-	lf := lockfile.LockFile{
-		Version:     1,
-		Registry:    srv.URL,
-		GeneratedAt: "2026-05-18T00:00:00Z",
-		Entries: []lockfile.LockEntry{
-			{
-				ID:   "kubernetes/operator.victoriametrics.com@0.70.0",
-				Base: "kubernetes/operator.victoriametrics.com/0.70.0/",
-				Schemas: map[string]lockfile.SchemaEntry{
-					"VMCluster": {Integrity: "sha256-AAAA", Size: 1000},
-				},
-			},
-			{
-				ID:   "kubernetes/stale.group.io@9.9.9",
-				Base: "kubernetes/stale.group.io/9.9.9/",
-				Schemas: map[string]lockfile.SchemaEntry{
-					"StaleKind": {Integrity: "sha256-CCCC", Size: 500},
-				},
-			},
-		},
-	}
-	encoded, err := lockfile.EncodeLock(lf)
+		[]string{"--path", outside, "--registry", srv.URL, "--cache-dir", t.TempDir()},
+		&stdout, &stderr)
 	if err != nil {
-		t.Fatalf("EncodeLock: %v", err)
+		t.Errorf("unpinned manifest should warn, not error: %v (stdout=%s)", err, stdout.String())
 	}
-	lockPath := filepath.Join(dir, "schemalock.lock")
-	if err := os.WriteFile(lockPath, encoded, 0o644); err != nil {
-		t.Fatalf("write lockfile: %v", err)
+	if !strings.Contains(stdout.String(), "warn") {
+		t.Errorf("expected 'warn' in output for unpinned manifest; stdout=%s", stdout.String())
 	}
-	// Intent only declares the first entry.
-	intentPath := buildTestIntent(t, dir, []string{"operator.victoriametrics.com@0.70.0"})
+}
+
+func TestRunVerify_strictPinnedFailsOnUnpinned(t *testing.T) {
+	srv := startSchemaCDN(t)
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "vm.yaml"),
+		[]byte(`apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMCluster
+metadata: { name: x }
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	var stdout, stderr bytes.Buffer
-	err = runVerify(context.Background(),
-		[]string{
-			"--file=" + intentPath,
-			"--lockfile=" + lockPath,
-			"--registry=" + srv.URL,
-		},
-		&stdout, &stderr,
-	)
+	err := runVerify(context.Background(),
+		[]string{"--path", outside, "--registry", srv.URL, "--strict-pinned", "--cache-dir", t.TempDir()},
+		&stdout, &stderr)
 	if err == nil {
-		t.Fatal("expected error for stale lockfile entry, got nil")
+		t.Fatal("--strict-pinned should fail on an unpinned manifest")
 	}
-	if !errors.Is(err, ErrDrift) {
-		t.Errorf("expected ErrDrift, got: %v", err)
+}
+
+// copyFixture copies a directory tree from testdata to a temp dir.
+func copyFixture(t *testing.T, srcRel string) string {
+	t.Helper()
+	dst := t.TempDir()
+	src, err := filepath.Abs(srcRel)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if exitCodeFor(err) != 2 {
-		t.Errorf("exitCodeFor = %d, want 2", exitCodeFor(err))
+	if err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, b, 0o644)
+	}); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(stdout.String(), "drift:") {
-		t.Errorf("stdout %q should contain 'drift:'", stdout.String())
-	}
+	return dst
 }

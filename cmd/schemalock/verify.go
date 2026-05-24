@@ -6,34 +6,43 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
+	"path/filepath"
 
-	"github.com/schemalock/app/internal/lockfile"
-	"github.com/schemalock/app/internal/registry"
+	"github.com/schemalock/app/internal/lsp"
+	"github.com/schemalock/app/internal/validator"
 )
 
-// runVerify is the entry point for the `verify` subcommand.
-// It parses flags from args, reads both schemalock.yaml and schemalock.lock,
-// fetches the live manifest from the CDN, and reports any drift.
+// runVerify discovers every YAML manifest under --path (default ".") and
+// validates each against its resolved schema (intent-pinned, falling back
+// to CDN-latest for unpinned kinds). Exits non-zero when any manifest fails
+// validation; with --strict-pinned, unpinned kinds escalate to failures
+// rather than warnings.
 func runVerify(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("verify", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
 		fmt.Fprintf(stdout, `Usage: schemalock verify [flags]
 
-Compare schemalock.lock against the live CDN manifest. Exits 0 if clean,
-exits 2 if any integrity hash has drifted.
+Validate every YAML manifest under --path against its effective schema. The
+effective schema is resolved by walking up from each manifest's directory
+through schemalock.yaml files (with root: true halting the walk), or — for
+kinds not pinned by any intent file — by fetching the latest published
+schema from the CDN.
+
+Exits 0 on success; non-zero if any manifest fails validation or, with
+--strict-pinned, if any manifest's kind is not in the intent set.
 
 Flags:
 `)
 		fs.PrintDefaults()
 	}
 
-	filePath := fs.String("file", "schemalock.yaml", "path to schemalock.yaml intent file")
-	lockfilePath := fs.String("lockfile", "schemalock.lock", "path to lockfile")
-	registryURL := fs.String("registry", "https://cdn.schemalock.dev", "base URL of the schema registry")
-	_ = fs.Bool("strict", true, "strict mode (reserved; always on for PoC)")
-
+	pathFlag := fs.String("path", ".", "directory to discover manifests under")
+	registryURL := fs.String("registry", "https://cdn.schemalock.dev", "registry base URL")
+	cacheDir := fs.String("cache-dir", "", "override schema cache directory (default ~/.schemalock/cache)")
+	strictPinned := fs.Bool("strict-pinned", false, "treat unpinned kinds as errors instead of warnings")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -41,131 +50,97 @@ Flags:
 		return fmt.Errorf("%w: %s", ErrUsage, err)
 	}
 
-	// Read and decode the intent file.
-	intentBytes, err := os.ReadFile(*filePath)
+	root, err := filepath.Abs(*pathFlag)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("%w: intent file not found: %s", ErrUsage, *filePath)
-		}
-		return fmt.Errorf("%w: reading %s: %v", ErrIO, *filePath, err)
+		return fmt.Errorf("%w: --path: %s", ErrUsage, err)
 	}
-	intent, err := lockfile.DecodeIntent(intentBytes)
+	if info, err := os.Stat(root); err != nil || !info.IsDir() {
+		return fmt.Errorf("%w: --path is not a directory: %s", ErrUsage, root)
+	}
+
+	var resolver *lsp.Resolver
+	if *cacheDir != "" {
+		resolver = lsp.NewCLIResolverWithCacheDir(*registryURL, *cacheDir)
+	} else {
+		var rerr error
+		resolver, rerr = lsp.NewCLIResolver(*registryURL)
+		if rerr != nil {
+			return fmt.Errorf("%w: building resolver: %s", ErrIO, rerr)
+		}
+	}
+	comp := validator.NewCompiler()
+
+	manifests, err := discoverManifests(root)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrUsage, err)
+		return fmt.Errorf("%w: discovering manifests: %s", ErrIO, err)
+	}
+	if len(manifests) == 0 {
+		fmt.Fprintf(stdout, "no YAML manifests found under %s\n", root)
+		return nil
 	}
 
-	// Read and decode the lockfile.
-	lockBytes, err := os.ReadFile(*lockfilePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("%w: lockfile not found — run `schemalock lock` first: %s", ErrUsage, *lockfilePath)
+	var passed, warned, failed int
+	for _, m := range manifests {
+		text, rerr := os.ReadFile(m)
+		if rerr != nil {
+			fmt.Fprintf(stdout, "%s\twarn: read failed: %s\n", relativize(root, m), rerr)
+			warned++
+			continue
 		}
-		return fmt.Errorf("%w: reading %s: %v", ErrIO, *lockfilePath, err)
-	}
-	lf, err := lockfile.DecodeLock(lockBytes)
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrUsage, err)
-	}
+		fileURI := "file://" + (&url.URL{Path: m}).EscapedPath()
+		res := resolver.Resolve(ctx, fileURI, string(text))
 
-	// Build the set of IDs declared in the intent.
-	intentIDs := make(map[string]struct{})
-	for eco, specs := range intent.Ecosystems {
-		for _, spec := range specs {
-			id := eco + "/" + spec
-			intentIDs[id] = struct{}{}
-		}
-	}
-
-	// Build the set of IDs present in the lockfile.
-	lockIDs := make(map[string]struct{}, len(lf.Entries))
-	for _, entry := range lf.Entries {
-		lockIDs[entry.ID] = struct{}{}
-	}
-
-	// Collect drift findings (don't fail-fast).
-	var drifts []string
-
-	// Every intent ID must be in the lockfile.
-	for id := range intentIDs {
-		if _, ok := lockIDs[id]; !ok {
-			drifts = append(drifts, fmt.Sprintf("drift: %s missing from lockfile (run `schemalock lock`)", id))
-		}
-	}
-
-	// Every lockfile ID must be in the intent.
-	for id := range lockIDs {
-		if _, ok := intentIDs[id]; !ok {
-			drifts = append(drifts, fmt.Sprintf("drift: %s in lockfile but not in schemalock.yaml", id))
-		}
-	}
-
-	// If set membership already has drift, report and return immediately
-	// (we cannot verify manifests for entries that are completely absent).
-	if len(drifts) > 0 {
-		for _, d := range drifts {
-			fmt.Fprintln(stdout, d)
-		}
-		return fmt.Errorf("schemalock.lock has drifted from schemalock.yaml: %w", ErrDrift)
-	}
-
-	// Fetch live manifests and compare integrity + size for each Kind.
-	client := registry.NewClient(*registryURL)
-
-	for _, entry := range lf.Entries {
-		eco, group, version, idErr := lockfile.ResolveID(entry.ID)
-		if idErr != nil {
-			return fmt.Errorf("%w: malformed lock entry ID %q: %v", ErrUsage, entry.ID, idErr)
-		}
-
-		manifest, fetchErr := client.FetchManifest(ctx, eco, group, version)
-		if fetchErr != nil {
-			if errors.Is(fetchErr, registry.ErrNotFound) {
-				return fmt.Errorf("%w: manifest not found for %s: %v", ErrIO, entry.ID, fetchErr)
-			}
-			return fmt.Errorf("%w: fetching manifest for %s: %v", ErrIO, entry.ID, fetchErr)
-		}
-
-		// Check every Kind recorded in the lockfile against the live manifest.
-		for kind, locked := range entry.Schemas {
-			live, ok := manifest.Kinds[kind]
-			if !ok {
-				drifts = append(drifts,
-					fmt.Sprintf("drift: %s/%s@%s %s kind missing from live manifest", eco, group, version, kind))
+		rel := relativize(root, m)
+		switch res.State {
+		case lsp.StateUnindexable:
+			// No apiVersion+kind, or group not recognised. Skip silently.
+			continue
+		case lsp.StatePinned, lsp.StatePreview, lsp.StateUnpinned:
+			schema, cerr := comp.Compile(res.Integrity, res.Schema)
+			if cerr != nil {
+				fmt.Fprintf(stdout, "%s\twarn: schema compile error: %s\n", rel, cerr)
+				warned++
 				continue
 			}
-			if locked.Integrity != live.Integrity {
-				drifts = append(drifts,
-					fmt.Sprintf("drift: %s/%s@%s %s expected=%s actual=%s",
-						eco, group, version, kind,
-						truncateIntegrity(locked.Integrity),
-						truncateIntegrity(live.Integrity)))
+			docs, perr := parseYAMLForValidation(text)
+			if perr != nil || len(docs) == 0 {
+				fmt.Fprintf(stdout, "%s\twarn: parse error: %v\n", rel, perr)
+				warned++
+				continue
 			}
-			if locked.Size != live.Size {
-				drifts = append(drifts,
-					fmt.Sprintf("drift: %s/%s@%s %s size expected=%d actual=%d",
-						eco, group, version, kind, locked.Size, live.Size))
+			diags := validator.Validate(schema, docs[0])
+			if len(diags) > 0 {
+				fmt.Fprintf(stdout, "%s\tfail: %d validation error(s) against %s@%s\n",
+					rel, len(diags), res.Group, res.Version)
+				for _, d := range diags {
+					fmt.Fprintf(stdout, "    %s\n", d.Message)
+				}
+				failed++
+				continue
 			}
+			if res.State == lsp.StateUnpinned {
+				if *strictPinned {
+					fmt.Fprintf(stdout, "%s\tfail: unpinned (strict-pinned): %s/%s\n",
+						rel, res.Group, res.Kind)
+					failed++
+				} else {
+					fmt.Fprintf(stdout, "%s\twarn: unpinned: validated against latest %s@%s\n",
+						rel, res.Group, res.Version)
+					warned++
+				}
+				continue
+			}
+			fmt.Fprintf(stdout, "%s\tok: %s@%s\n", rel, res.Group, res.Version)
+			passed++
+		case lsp.StateError:
+			fmt.Fprintf(stdout, "%s\tfail: %s\n", rel, res.ErrMsg)
+			failed++
 		}
-
 	}
 
-	if len(drifts) > 0 {
-		for _, d := range drifts {
-			fmt.Fprintln(stdout, d)
-		}
-		return fmt.Errorf("schemalock.lock has drifted from live manifest: %w", ErrDrift)
+	fmt.Fprintf(stdout, "\n%d passed, %d warned, %d failed\n", passed, warned, failed)
+	if failed > 0 {
+		return fmt.Errorf("verify: %d manifest(s) failed validation: %w", failed, ErrDrift)
 	}
-
-	fmt.Fprintf(stdout, "ok: %d entries verified\n", len(lf.Entries))
 	return nil
-}
-
-// truncateIntegrity returns the first 20 characters of s followed by "…" if
-// s is longer than 20 characters, making drift output readable on one line.
-func truncateIntegrity(s string) string {
-	const limit = 20
-	if len(s) <= limit {
-		return s
-	}
-	return s[:limit] + "…"
 }
