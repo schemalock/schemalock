@@ -59,7 +59,7 @@ type Config struct {
 // methods are silent no-ops. Construct via [NewConnector].
 type Connector struct {
 	cfg              Config
-	cmd              *exec.Cmd         // subprocess handle; nil when inactive or no subprocess
+	cmd              *exec.Cmd // subprocess handle; nil when inactive or no subprocess
 	logger           *log.Logger
 	schemaProvider   SchemaProvider    // set via SetSchemaProvider; may be nil
 	ownershipChecker func(string) bool // set via SetOwnershipChecker; may be nil

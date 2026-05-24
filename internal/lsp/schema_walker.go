@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
-	lsp "go.lsp.dev/protocol"
 	"github.com/schemalock/app/internal/yamldoc"
+	lsp "go.lsp.dev/protocol"
 )
 
 // cursorContext describes what the cursor is positioned at within a document.
@@ -46,7 +46,7 @@ type cursorContext struct {
 //     stack top whose column >= the incoming key's column).
 //  4. Classify the cursor column against the stack:
 //     - if the deepest open key K has K.col == cursor.col → sibling of K
-//       (parent of K's children);
+//     (parent of K's children);
 //     - if K.col < cursor.col → nest into K (offer K's children);
 //     - if no open key has K.col <= cursor.col → root completion.
 func positionAt(pos lsp.Position, doc yamldoc.Document) cursorContext {

@@ -33,10 +33,10 @@ type Config struct {
 // coordinates the worker pool and document store.
 // Construct with [NewServer]; run with [Server.Run].
 type Server struct {
-	log      *log.Logger
-	docs     *DocumentStore
-	cacheDir *cache.Cache
-	reg      *registry.Client
+	log          *log.Logger
+	docs         *DocumentStore
+	cacheDir     *cache.Cache
+	reg          *registry.Client
 	compiler     *validator.Compiler
 	intentLookup *intent.Lookup // nil until initialize succeeds
 	workers      *WorkerPool

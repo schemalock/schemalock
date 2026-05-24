@@ -148,10 +148,10 @@ func TestResolverChain_overlayWinsOverRoot(t *testing.T) {
 // returning StateUnpinned.
 func TestResolverChain_unpinnedFallsThroughToCDNLatest(t *testing.T) {
 	const (
-		pinnedGroup    = "operator.victoriametrics.com"
-		unpinnedGroup  = "cert-manager.io"
-		kind           = "Certificate"
-		latestVersion  = "1.13.0"
+		pinnedGroup   = "operator.victoriametrics.com"
+		unpinnedGroup = "cert-manager.io"
+		kind          = "Certificate"
+		latestVersion = "1.13.0"
 	)
 	schemaBody := `{"type":"object"}`
 
