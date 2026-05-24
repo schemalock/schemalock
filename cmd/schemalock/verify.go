@@ -34,6 +34,10 @@ schema from the CDN.
 Exits 0 on success; non-zero if any manifest fails validation or, with
 --strict-pinned, if any manifest's kind is not in the intent set.
 
+Strict-mode validation is on by default: any field not in the schema
+(typos, deprecated keys) is reported as an error. Pass --no-strict to
+match the LSP strict:false mode and tolerate unknown fields.
+
 Flags:
 `)
 		fs.PrintDefaults()
@@ -43,6 +47,7 @@ Flags:
 	registryURL := fs.String("registry", "https://cdn.schemalock.dev", "registry base URL")
 	cacheDir := fs.String("cache-dir", "", "override schema cache directory (default ~/.schemalock/cache)")
 	strictPinned := fs.Bool("strict-pinned", false, "treat unpinned kinds as errors instead of warnings")
+	noStrict := fs.Bool("no-strict", false, "disable strict-mode validation (allow unknown fields; matches LSP strict:false)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -96,7 +101,16 @@ Flags:
 			// No apiVersion+kind, or group not recognised. Skip silently.
 			continue
 		case lsp.StatePinned, lsp.StatePreview, lsp.StateUnpinned:
-			schema, cerr := comp.Compile(res.Integrity, res.Schema)
+			schemaBytes := res.Schema
+			compileKey := res.Integrity
+			if !*noStrict {
+				if wrapped, werr := validator.WrapStrict(schemaBytes); werr == nil {
+					schemaBytes = wrapped
+					compileKey = compileKey + ":strict"
+				}
+				// else: silent fall-through; strict-mode is best-effort.
+			}
+			schema, cerr := comp.Compile(compileKey, schemaBytes)
 			if cerr != nil {
 				fmt.Fprintf(stdout, "%s\twarn: schema compile error: %s\n", rel, cerr)
 				warned++

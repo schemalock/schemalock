@@ -50,6 +50,7 @@ for `schemalock --version`.
 ```bash
 schemalock verify                            # validate every YAML under cwd
 schemalock verify --path manifests/ --strict-pinned
+schemalock verify --no-strict   # tolerate unknown YAML fields
 schemalock add operator.victoriametrics.com@0.70.0
 schemalock add --file teamA/schemalock.yaml operator.victoriametrics.com@0.69.0
 schemalock fmt                               # canonicalize nearest schemalock.yaml
@@ -102,6 +103,10 @@ For each YAML document under `--path`:
    and warn (or fail, with `--strict-pinned`).
 
 Exits **0** when no manifest fails; non-zero otherwise.
+
+Unknown fields in any manifest (typos, deprecated keys not in the
+schema) fail verification by default. Pass `--no-strict` to match
+the LSP `strict: false` mode and tolerate them.
 
 ### `add` and `fmt`
 

@@ -21,9 +21,11 @@ import (
 func startSchemaCDN(t *testing.T) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
-	// Schema requires top-level "metadata" object — strict enough that we can
-	// reliably trigger validation failures from tests by omitting it.
-	permissive := []byte(`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","required":["metadata"],"properties":{"metadata":{"type":"object"}}}`)
+	// Schema requires top-level "metadata" object and declares the known
+	// top-level fields (apiVersion, kind, metadata, spec) so that strict-mode
+	// (additionalProperties: false) does not reject them. Unknown fields such
+	// as test-injected typos will still be rejected by WrapStrict.
+	permissive := []byte(`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","required":["metadata"],"properties":{"apiVersion":{"type":"string"},"kind":{"type":"string"},"metadata":{"type":"object"},"spec":{"type":"object"}}}`)
 	integrity := registry.ComputeIntegrity(permissive)
 	size := len(permissive)
 
@@ -33,7 +35,6 @@ func startSchemaCDN(t *testing.T) *httptest.Server {
 			_, _ = w.Write([]byte(`["0.70.0","0.69.0"]`))
 		})
 	for _, v := range []string{"0.70.0", "0.69.0"} {
-		v := v
 		mux.HandleFunc("/kubernetes/operator.victoriametrics.com/"+v+"/manifest.json",
 			func(w http.ResponseWriter, r *http.Request) {
 				body := fmt.Sprintf(`{"version":1,"kinds":{"VMCluster":{"integrity":%q,"size":%d}}}`,
@@ -136,6 +137,47 @@ metadata: { name: x }
 		&stdout, &stderr)
 	if err == nil {
 		t.Fatal("--strict-pinned should fail on an unpinned manifest")
+	}
+}
+
+func TestRunVerify_strictMode(t *testing.T) {
+	// Manifest contains an unknown field at the top level. The CDN
+	// schema served by startSchemaCDN already has properties.metadata,
+	// so an unknown sibling of "metadata" trips additionalProperties.
+	manifest := []byte(`apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMCluster
+metadata: { name: x }
+unknownTypoField: oops
+`)
+
+	cases := []struct {
+		name      string
+		extraArgs []string
+		wantErr   bool
+	}{
+		{name: "default rejects unknown field", extraArgs: nil, wantErr: true},
+		{name: "--no-strict accepts unknown field", extraArgs: []string{"--no-strict"}, wantErr: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := startSchemaCDN(t)
+			root := copyFixture(t, "testdata/repo_hierarchy")
+			if err := os.WriteFile(filepath.Join(root, "teamA", "vm.yaml"), manifest, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			args := []string{"--path", root, "--registry", srv.URL, "--cache-dir", t.TempDir()}
+			args = append(args, tc.extraArgs...)
+
+			var stdout, stderr bytes.Buffer
+			err := runVerify(context.Background(), args, &stdout, &stderr)
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected verify to fail; stdout=%s", stdout.String())
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected verify to pass; err=%v stdout=%s", err, stdout.String())
+			}
+		})
 	}
 }
 
