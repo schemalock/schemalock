@@ -1,6 +1,7 @@
 package intent
 
 import (
+	"fmt"
 	"sync"
 )
 
@@ -55,13 +56,14 @@ func (l *Lookup) setFor(dir string) (IntentSet, error) {
 
 	chain, err := WalkUp(dir)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("walking intent hierarchy from %s: %w", dir, err)
 	}
 	set, err := Merge(chain)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("merging intent chain for %s: %w", dir, err)
 	}
 
+	// Two goroutines may reach here concurrently; last writer wins, no corruption.
 	l.mu.Lock()
 	l.cache[dir] = set
 	l.mu.Unlock()
