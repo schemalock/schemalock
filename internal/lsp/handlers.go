@@ -2,7 +2,6 @@ package lsp
 
 import (
 	"context"
-	"fmt"
 	"runtime"
 	"strings"
 
@@ -13,60 +12,22 @@ import (
 	"github.com/schemalock/app/internal/yamldoc"
 )
 
-// bootstrapKindCompletions returns completion items for the value of a
-// root-level `kind` field when apiVersion is set on the document but kind is
-// still empty. Used to surface every Kind in the apiVersion's group so the
-// user can pick one without typing it from memory.
+// bootstrapKindCompletions is a placeholder for the kind-value completion
+// trigger that used to consult the lockfile-backed SchemaResolver's
+// KindsForGroup index. The intent-based resolver does not maintain a
+// global kind→group index; replacing this requires fetching manifest.json
+// for the intent-pinned version of the doc's group and listing its kinds.
 //
-// Returns nil when not applicable:
-//   - doc.APIVersion is empty
-//   - doc.Kind is already set (don't override schema-driven completion)
-//   - apiVersion has no "/" (core types — out of scope per Resolve semantics)
-//   - cursor is not at the value of the root-level `kind` field
-//   - the apiVersion's group has no entries in the lockfile
-//
-// Callers should check for nil and fall back to the regular completion path.
-// An empty (non-nil) slice means "the trigger fired but produced zero kinds"
-// and should still terminate the bootstrap branch.
-//
-// Note: bootstrapKindCompletions is never called with a nil resolver in
-// production — the caller short-circuits at the resolver-nil check before
-// reaching this helper. Do not add a redundant nil check here.
+// TODO(intent-bootstrap): reimplement against intent.Lookup + a per-pin
+// CDN manifest fetch. Until then, bootstrap completion returns nil and the
+// regular schema-driven completion path takes over.
 func bootstrapKindCompletions(
 	doc yamldoc.Document,
 	cursorCtx cursorContext,
-	resolver *SchemaResolver,
 ) []lsp.CompletionItem {
-	if doc.APIVersion == "" || doc.Kind != "" {
-		return nil
-	}
-	if cursorCtx.Pointer != "/kind" || cursorCtx.IsKeyPosition {
-		return nil
-	}
-	group, _, ok := strings.Cut(doc.APIVersion, "/")
-	if !ok || group == "" {
-		return nil
-	}
-	kinds := resolver.KindsForGroup(group)
-	if len(kinds) == 0 {
-		return nil
-	}
-	detail := "Kind from " + group
-	items := make([]lsp.CompletionItem, 0, len(kinds))
-	for i, kind := range kinds {
-		items = append(items, lsp.CompletionItem{
-			Label:      kind,
-			Kind:       completionKindEnumMember,
-			InsertText: kind,
-			SortText:   fmt.Sprintf("%04d_%s", i, kind),
-			Detail:     detail,
-			Documentation: lsp.MarkupContent{
-				Kind:  lsp.Markdown,
-				Value: "_Resolved from schemalock.lock_",
-			},
-		})
-	}
-	return items
+	_ = doc
+	_ = cursorCtx
+	return nil
 }
 
 // requeueAllOpenDocuments iterates over all open documents and re-submits

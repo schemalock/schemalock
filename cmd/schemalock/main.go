@@ -65,8 +65,6 @@ func main() {
 
 	var err error
 	switch sub {
-	case "lock":
-		err = runLock(ctx, rest, os.Stdout, os.Stderr)
 	case "verify":
 		err = runVerify(ctx, rest, os.Stdout, os.Stderr)
 	case "fmt":

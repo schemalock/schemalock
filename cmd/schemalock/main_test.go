@@ -110,18 +110,6 @@ func TestExitCodeFor(t *testing.T) {
 	}
 }
 
-// TestRunLock_HelpFlag asserts that --help on lock returns nil (not an error).
-func TestRunLock_HelpFlag(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	err := runLock(context.Background(), []string{"--help"}, &stdout, &stderr)
-	if err != nil {
-		t.Errorf("expected nil error for --help, got: %v", err)
-	}
-	if !strings.Contains(stdout.String(), "lock") {
-		t.Errorf("expected help text on stdout, got: %q", stdout.String())
-	}
-}
-
 // TestRunVerify_HelpFlag asserts that --help on verify returns nil.
 func TestRunVerify_HelpFlag(t *testing.T) {
 	var stdout, stderr bytes.Buffer

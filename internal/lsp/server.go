@@ -322,7 +322,6 @@ func (s *Server) enqueueValidation(uri, text string, version uint32, res Resolve
 		uri:         uri,
 		version:     version,
 		text:        text,
-		resolver:    nil, // lockfile resolver removed; CDN schema bytes used instead
 		schemaBytes: res.Schema,
 		integrity:   res.Integrity,
 	})

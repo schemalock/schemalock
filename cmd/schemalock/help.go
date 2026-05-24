@@ -27,7 +27,6 @@ Subcommands:
   add      Append or replace a name@version in the nearest schemalock.yaml
   fmt      Canonicalize a schemalock.yaml (sort ecosystems and specs)
   serve    Run the LSP server on stdio (requires --stdio)
-  lock     [deprecated] Legacy lockfile generator (slated for removal)
 
 Flags:
   -h, --help       Show this help
