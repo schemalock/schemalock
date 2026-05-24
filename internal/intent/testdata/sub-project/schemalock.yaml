@@ -1,0 +1,5 @@
+root: true
+version: 1
+ecosystems:
+  kubernetes:
+    - argoproj.io@v2.10.0

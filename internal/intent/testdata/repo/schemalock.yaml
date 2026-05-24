@@ -1,0 +1,5 @@
+version: 1
+ecosystems:
+  kubernetes:
+    - cert-manager.io@v1.16.1
+    - operator.victoriametrics.com@0.70.0
