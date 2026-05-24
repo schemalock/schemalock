@@ -334,8 +334,8 @@ func (m *MockYamlls) TypeDefinition(_ context.Context, _ *lsp.TypeDefinitionPara
 func (m *MockYamlls) WorkDoneProgressCancel(_ context.Context, _ *lsp.WorkDoneProgressCancelParams) error {
 	return nil
 }
-func (m *MockYamlls) LogTrace(_ context.Context, _ *lsp.LogTraceParams) error  { return nil }
-func (m *MockYamlls) SetTrace(_ context.Context, _ *lsp.SetTraceParams) error  { return nil }
+func (m *MockYamlls) LogTrace(_ context.Context, _ *lsp.LogTraceParams) error { return nil }
+func (m *MockYamlls) SetTrace(_ context.Context, _ *lsp.SetTraceParams) error { return nil }
 func (m *MockYamlls) ShowDocument(_ context.Context, _ *lsp.ShowDocumentParams) (*lsp.ShowDocumentResult, error) {
 	return nil, nil
 }

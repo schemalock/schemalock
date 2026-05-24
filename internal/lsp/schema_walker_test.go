@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
-	lspprot "go.lsp.dev/protocol"
 	"github.com/schemalock/app/internal/yamldoc"
+	lspprot "go.lsp.dev/protocol"
 )
 
 // buildSchema compiles a JSON Schema from a raw JSON literal and returns the
@@ -481,8 +481,8 @@ func TestPositionAt_Outdent(t *testing.T) {
 			// [/spec(1), /spec/outer(3)] — outer(col 3 on line 6) closed inner.
 			// Deepest stack entry with col <= 3: /spec/outer at col 3.
 			// col 3 == 3 → sibling of /spec/outer. Parent = /spec.
-			name:             "OutdentToSpecLevel_BlankLineAtCol2",
-			line:             7, char: 2,
+			name: "OutdentToSpecLevel_BlankLineAtCol2",
+			line: 7, char: 2,
 			wantParent:       "/spec",
 			wantIsKey:        true,
 			wantExistingKeys: []string{"inner", "outer"},
@@ -491,8 +491,8 @@ func TestPositionAt_Outdent(t *testing.T) {
 			// col 0 (LSP) = col 1 (yamldoc). Indent stack at line 7:
 			// [/spec(1), /spec/outer(3)]. Deepest entry with col <= 1: /spec at col 1.
 			// col 1 == 1 → sibling of /spec. Parent = "" (root completion).
-			name:             "OutdentToRoot_BlankLineAtCol0",
-			line:             7, char: 0,
+			name: "OutdentToRoot_BlankLineAtCol0",
+			line: 7, char: 0,
 			wantParent:       "",
 			wantIsKey:        true,
 			wantExistingKeys: []string{"apiVersion", "kind", "spec"},
@@ -504,8 +504,8 @@ func TestPositionAt_Outdent(t *testing.T) {
 			// sees /spec/inner after /spec/outer is pushed.
 			// Deepest stack entry with col <= 2: /spec at col 1. col 1 < 2 → nest into
 			// /spec. ParentPointer = "/spec", ExistingKeys = ["inner","outer"].
-			name:             "OutdentMidIndent_Col1",
-			line:             7, char: 1,
+			name: "OutdentMidIndent_Col1",
+			line: 7, char: 1,
 			wantParent:       "/spec",
 			wantIsKey:        true,
 			wantExistingKeys: []string{"inner", "outer"},
@@ -517,8 +517,8 @@ func TestPositionAt_Outdent(t *testing.T) {
 			// the old expected value (/spec/inner / ["a","b"]) pinned the bug.
 			// Deepest stack entry with col <= 5: /spec/outer at col 3. col 3 < 5
 			// → nest into /spec/outer. /spec/outer is a scalar ("3"), so ExistingKeys = [].
-			name:             "SiblingOfDeepest_BlankLineAtCol4",
-			line:             7, char: 4,
+			name: "SiblingOfDeepest_BlankLineAtCol4",
+			line: 7, char: 4,
 			wantParent:       "/spec/outer",
 			wantIsKey:        true,
 			wantExistingKeys: []string{},
@@ -530,8 +530,8 @@ func TestPositionAt_Outdent(t *testing.T) {
 			// the old expected value (/spec/inner/b) pinned the bug.
 			// Deepest stack entry with col <= 7: /spec/outer at col 3. col 3 < 7
 			// → nest into /spec/outer. /spec/outer is a scalar ("3"), so ExistingKeys = [].
-			name:             "NestIntoDeepest_BlankLineAtCol6",
-			line:             7, char: 6,
+			name: "NestIntoDeepest_BlankLineAtCol6",
+			line: 7, char: 6,
 			wantParent:       "/spec/outer",
 			wantIsKey:        true,
 			wantExistingKeys: []string{},
@@ -605,8 +605,8 @@ func TestPositionAt_ClosingSiblings(t *testing.T) {
 			// Deepest entry with col <= 5: /spec/next at col 3. col 3 < 5 → nest into
 			// /spec/next. Without the fix, the old walk would find /spec/outer/after
 			// at col 5 as the deepest key and return /spec/outer (closed by /spec/next).
-			name:             "NestIntoNext_NotIntoClosedAfter",
-			line:             7, char: 4,
+			name: "NestIntoNext_NotIntoClosedAfter",
+			line: 7, char: 4,
 			wantParent:       "/spec/next",
 			wantIsKey:        true,
 			wantExistingKeys: []string{},
@@ -616,8 +616,8 @@ func TestPositionAt_ClosingSiblings(t *testing.T) {
 			// Stack: [/spec(1), /spec/next(3)].
 			// Deepest entry with col <= 3: /spec/next at col 3. col 3 == 3 → sibling
 			// of /spec/next. Parent = /spec. ExistingKeys at /spec = ["next","outer"].
-			name:             "SiblingOfNext_NotInsideClosedOuter",
-			line:             7, char: 2,
+			name: "SiblingOfNext_NotInsideClosedOuter",
+			line: 7, char: 2,
 			wantParent:       "/spec",
 			wantIsKey:        true,
 			wantExistingKeys: []string{"next", "outer"},
@@ -627,8 +627,8 @@ func TestPositionAt_ClosingSiblings(t *testing.T) {
 			// Stack: [/spec(1), /spec/next(3)].
 			// Deepest entry with col <= 1: /spec at col 1. col 1 == 1 → sibling of
 			// /spec. Parent = "". ExistingKeys at root = ["spec"].
-			name:             "OutdentToRoot",
-			line:             7, char: 0,
+			name: "OutdentToRoot",
+			line: 7, char: 0,
 			wantParent:       "",
 			wantIsKey:        true,
 			wantExistingKeys: []string{"spec"},
@@ -683,48 +683,48 @@ func TestPositionAt_KindValuePosition(t *testing.T) {
 	}
 
 	tests := []struct {
-		name            string
-		doc             yamldoc.Document
-		line, char      int
-		wantPointer     string
-		wantParent      string
-		wantIsKey       bool
+		name             string
+		doc              yamldoc.Document
+		line, char       int
+		wantPointer      string
+		wantParent       string
+		wantIsKey        bool
 		wantExistingKeys []string
 	}{
 		{
-			name:            "EmptyKind_JustPastColon",
-			doc:             docsEmpty[0],
-			line:            1, char: 5,
-			wantPointer:     "/kind",
-			wantParent:      "",
-			wantIsKey:       false,
+			name: "EmptyKind_JustPastColon",
+			doc:  docsEmpty[0],
+			line: 1, char: 5,
+			wantPointer:      "/kind",
+			wantParent:       "",
+			wantIsKey:        false,
 			wantExistingKeys: []string{"apiVersion", "kind"},
 		},
 		{
-			name:            "EmptyKind_OneCharPastColon",
-			doc:             docsEmpty[0],
-			line:            1, char: 6,
-			wantPointer:     "/kind",
-			wantParent:      "",
-			wantIsKey:       false,
+			name: "EmptyKind_OneCharPastColon",
+			doc:  docsEmpty[0],
+			line: 1, char: 6,
+			wantPointer:      "/kind",
+			wantParent:       "",
+			wantIsKey:        false,
 			wantExistingKeys: []string{"apiVersion", "kind"},
 		},
 		{
-			name:            "PopulatedKind_InsideValue",
-			doc:             docsPopulated[0],
-			line:            1, char: 7,
-			wantPointer:     "/kind",
-			wantParent:      "",
-			wantIsKey:       false,
+			name: "PopulatedKind_InsideValue",
+			doc:  docsPopulated[0],
+			line: 1, char: 7,
+			wantPointer:      "/kind",
+			wantParent:       "",
+			wantIsKey:        false,
 			wantExistingKeys: []string{"apiVersion", "kind"},
 		},
 		{
-			name:            "PopulatedKind_InsideKey",
-			doc:             docsPopulated[0],
-			line:            1, char: 0,
-			wantPointer:     "/kind",
-			wantParent:      "",
-			wantIsKey:       true,
+			name: "PopulatedKind_InsideKey",
+			doc:  docsPopulated[0],
+			line: 1, char: 0,
+			wantPointer:      "/kind",
+			wantParent:       "",
+			wantIsKey:        true,
 			wantExistingKeys: []string{"apiVersion", "kind"},
 		},
 	}

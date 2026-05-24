@@ -49,7 +49,7 @@ func newTestServerWithCDN(t *testing.T, cdnBaseURL string, fallbackEnabled bool)
 	cdn.cacheDir = cacheDir
 
 	ov := NewOverrideStore()
-	chain := newResolverChain(nil /* no lockfile */, ov, cdn, fallbackEnabled, cacheDir)
+	chain := newResolverChain(nil /* no intent lookup */, ov, cdn, fallbackEnabled)
 	router := NewRouter(chain)
 
 	srv := &Server{
@@ -263,7 +263,7 @@ func TestRegistryFallback_CompletionHoverDiagnostics(t *testing.T) {
 	cdn.cacheDir = cacheDir
 
 	ov := NewOverrideStore()
-	chain := newResolverChain(nil /* no lockfile */, ov, cdn, true, cacheDir)
+	chain := newResolverChain(nil /* no intent lookup */, ov, cdn, true)
 	router := NewRouter(chain)
 
 	s := &Server{

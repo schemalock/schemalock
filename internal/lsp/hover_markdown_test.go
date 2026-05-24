@@ -35,7 +35,7 @@ func buildSchemaWithFormat(t *testing.T, raw string) *jsonschema.Schema {
 func TestHoverMarkdown(t *testing.T) {
 	tests := []struct {
 		name           string
-		schema         string   // JSON Schema literal; empty → nil schema
+		schema         string // JSON Schema literal; empty → nil schema
 		fieldName      string
 		parentRequired []string // keys in the parent's required list
 		kind           string
@@ -319,9 +319,9 @@ func TestLastPointerSegment(t *testing.T) {
 		{ptr: "/foo", want: "foo"},
 		{ptr: "/foo/bar", want: "bar"},
 		{ptr: "/foo/bar/baz", want: "baz"},
-		{ptr: "/a~1b", want: "a/b"},     // RFC 6901 ~1 → /
-		{ptr: "/a~0b", want: "a~b"},     // RFC 6901 ~0 → ~
-		{ptr: "/x/a~1b/c", want: "c"},   // ~1 in middle segment, last is plain
+		{ptr: "/a~1b", want: "a/b"},   // RFC 6901 ~1 → /
+		{ptr: "/a~0b", want: "a~b"},   // RFC 6901 ~0 → ~
+		{ptr: "/x/a~1b/c", want: "c"}, // ~1 in middle segment, last is plain
 	}
 	for _, tc := range tests {
 		t.Run(tc.ptr, func(t *testing.T) {

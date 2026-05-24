@@ -8,6 +8,11 @@ this project uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`schemalock verify` strict-mode parity with the LSP.** `verify` now
+  applies the same `additionalProperties: false` rewrite that the LSP
+  server uses, so unknown YAML fields cause CI to fail. Pass
+  `--no-strict` to restore the pre-`0.1.x` behaviour (equivalent to the
+  LSP `strict: false` initialization option).
 - Apache-2.0 LICENSE.
 - This CHANGELOG.
 - **Strict-mode typo detection (default ON).** Unknown fields in CRD YAML

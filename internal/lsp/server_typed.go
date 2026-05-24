@@ -17,7 +17,7 @@ import (
 	"go.lsp.dev/jsonrpc2"
 	lsp "go.lsp.dev/protocol"
 
-	"github.com/schemalock/app/internal/lockfile"
+	"github.com/schemalock/app/internal/intent"
 	"github.com/schemalock/app/internal/lsp/adapter/yamlls"
 	"github.com/schemalock/app/internal/lsp/protocol"
 	"github.com/schemalock/app/internal/registry"
@@ -49,25 +49,10 @@ func (s *Server) initialize(ctx context.Context, params *lsp.InitializeParams) (
 	}
 	rootPath := uriToPath(rootURI)
 
-	// Walk up from rootPath to find schemalock.lock.
-	lf, lockPath, err := findAndReadLock(rootPath)
-
-	var resolver *SchemaResolver
-	var lockfilePath string
-	if err != nil {
-		// Not finding the lockfile is not fatal — the server still initialises
-		// but has no resolver (all documents will be skipped).
-		s.log.Printf("initialize: %v (no schema validation available)", err)
-	} else {
-		s.log.Printf("initialize: using lock file at %s", lockPath)
-		lockfilePath = lockPath
-		r, rerr := NewSchemaResolver(lf)
-		if rerr != nil {
-			s.log.Printf("initialize: building resolver: %v", rerr)
-		} else {
-			resolver = r
-		}
-	}
+	// Build an intent lookup for walking schemalock.yaml hierarchies.
+	// NewLookup is cheap (empty cache) and resolves lazily on first PinFor call.
+	intentLookup := intent.NewLookup()
+	s.log.Printf("initialize: workspace root %s", rootPath)
 
 	// Parse fallback.enabled from initializationOptions. Default is true so
 	// the CDN fallback is active unless explicitly disabled by the client.
@@ -95,7 +80,7 @@ func (s *Server) initialize(ctx context.Context, params *lsp.InitializeParams) (
 	cdn := newCDNResolver(s.reg, 5*time.Minute, 24*time.Hour, 30*time.Second)
 	cdn.cacheDir = s.cacheDir.Root()
 	ov := NewOverrideStore()
-	chain := newResolverChain(resolver, ov, cdn, fallbackEnabled, s.cacheDir.Root())
+	chain := newResolverChain(intentLookup, ov, cdn, fallbackEnabled)
 	router := NewRouter(chain)
 
 	// Resolve yaml-ls path from initializationOptions. The shape is:
@@ -122,32 +107,10 @@ func (s *Server) initialize(ctx context.Context, params *lsp.InitializeParams) (
 
 	// Wire the schema provider: given a document URI, return the cached schema
 	// file:// URI for owned documents so yaml-ls can apply the correct schema.
-	connector.SetSchemaProvider(func(provCtx context.Context, docURI string) string {
-		s.mu.RLock()
-		res := s.resolver
-		s.mu.RUnlock()
-		if res == nil {
-			return ""
-		}
-		text, _, ok := s.docs.Get(docURI)
-		if !ok {
-			return ""
-		}
-		docs, parseErr := yamldoc.Parse([]byte(text))
-		if parseErr != nil || len(docs) == 0 {
-			return ""
-		}
-		doc := docs[0]
-		if doc.APIVersion == "" || doc.Kind == "" {
-			return ""
-		}
-		entry, resErr := res.Resolve(doc.APIVersion, doc.Kind)
-		if resErr != nil {
-			return ""
-		}
-		return pathToFileURI(s.cacheDir.SchemaPath(
-			entry.Ecosystem, entry.Group, entry.ReleaseVersion, entry.Kind,
-		))
+	// The intent-based path does not maintain a kind→path index, so this
+	// provider always returns "" for now (yaml-ls falls back to its own lookup).
+	connector.SetSchemaProvider(func(_ context.Context, _ string) string {
+		return ""
 	})
 
 	// Wire the ownership checker: PublishDiagnostics uses this to drop
@@ -163,10 +126,9 @@ func (s *Server) initialize(ctx context.Context, params *lsp.InitializeParams) (
 		return s.router.IsOwned(context.Background(), docURI, text)
 	})
 
-	// Write lockfilePath and resolver under the write lock.
+	// Wire intentLookup under the write lock.
 	s.mu.Lock()
-	s.lockfilePath = lockfilePath
-	s.resolver = resolver
+	s.intentLookup = intentLookup
 	s.mu.Unlock()
 	// router, yamlls, cdnResolver, overrides, fallback, and strict are not
 	// guarded by mu: they are written once here and only read afterward. The
@@ -445,10 +407,6 @@ func (s *Server) Completion(ctx context.Context, params *lsp.CompletionParams) (
 func (s *Server) ownedCompletion(params *lsp.CompletionParams, text string, res ResolveResult) (*lsp.CompletionList, error) {
 	empty := &lsp.CompletionList{IsIncomplete: false, Items: []lsp.CompletionItem{}}
 
-	s.mu.RLock()
-	resolver := s.resolver
-	s.mu.RUnlock()
-
 	docs, err := yamldoc.Parse([]byte(text))
 	if err != nil || len(docs) == 0 {
 		return empty, nil
@@ -460,33 +418,15 @@ func (s *Server) ownedCompletion(params *lsp.CompletionParams, text string, res 
 		Character: params.Position.Character,
 	}, doc)
 
-	// Bootstrap completions (apiVersion set, kind not yet typed) only need the
-	// lockfile resolver to enumerate kinds for the group. Skip when nil.
-	if resolver != nil {
-		if items := bootstrapKindCompletions(doc, cursorCtx, resolver); items != nil {
-			return &lsp.CompletionList{IsIncomplete: false, Items: items}, nil
-		}
-	}
-
 	if doc.APIVersion == "" || doc.Kind == "" {
 		return empty, nil
 	}
 
-	// Determine the compiled schema. Try the lockfile resolver first; fall
-	// through to res.Schema for CDN-resolved documents.
+	// Compile the schema from the chain-resolved bytes (CDN-resolved or pinned).
 	var compiled *jsonschema.Schema
-	if resolver != nil {
-		if entry, rErr := resolver.Resolve(doc.APIVersion, doc.Kind); rErr == nil {
-			compiled, _ = s.compiler.LookupCached(entry.Integrity)
-		}
-	}
-	if compiled == nil && len(res.Schema) > 0 {
-		// CDN-resolved schema: compile (or retrieve from cache) using the
-		// integrity key supplied by the chain.
+	if len(res.Schema) > 0 {
 		compiled, err = s.compiler.Compile(res.Integrity, res.Schema)
 		if err != nil {
-			// Schema bytes are invalid; return empty rather than surfacing a
-			// compiler error through the completion channel.
 			return empty, nil
 		}
 	}
@@ -541,10 +481,6 @@ func (s *Server) Hover(ctx context.Context, params *lsp.HoverParams) (*lsp.Hover
 // ownedHover compiles the schema from res.Schema directly so that hover works
 // for documents not recorded in schemalock.lock.
 func (s *Server) ownedHover(params *lsp.HoverParams, text string, res ResolveResult) (*lsp.Hover, error) {
-	s.mu.RLock()
-	resolver := s.resolver
-	s.mu.RUnlock()
-
 	docs, err := yamldoc.Parse([]byte(text))
 	if err != nil || len(docs) == 0 {
 		return nil, nil
@@ -555,17 +491,9 @@ func (s *Server) ownedHover(params *lsp.HoverParams, text string, res ResolveRes
 		return nil, nil
 	}
 
-	// Determine the compiled schema. Try the lockfile resolver first; fall
-	// through to res.Schema for CDN-resolved documents.
+	// Compile the schema from the chain-resolved bytes (CDN-resolved or pinned).
 	var compiled *jsonschema.Schema
-	if resolver != nil {
-		if entry, rErr := resolver.Resolve(doc.APIVersion, doc.Kind); rErr == nil {
-			compiled, _ = s.compiler.LookupCached(entry.Integrity)
-		}
-	}
-	if compiled == nil && len(res.Schema) > 0 {
-		// CDN-resolved schema: compile (or retrieve from cache) using the
-		// integrity key supplied by the chain.
+	if len(res.Schema) > 0 {
 		compiled, err = s.compiler.Compile(res.Integrity, res.Schema)
 		if err != nil {
 			return nil, nil
@@ -605,50 +533,21 @@ func (s *Server) ownedHover(params *lsp.HoverParams, text string, res ResolveRes
 }
 
 // DidChangeWatchedFiles handles the workspace/didChangeWatchedFiles
-// notification. If any event is for the schemalock.lock file, it reloads the
-// resolver and re-queues validation for all open documents.
+// notification. If any event is for a schemalock.lock or schemalock.yaml file,
+// the intent lookup cache is invalidated and all open documents are re-queued.
 func (s *Server) DidChangeWatchedFiles(_ context.Context, params *lsp.DidChangeWatchedFilesParams) error {
-	s.mu.RLock()
-	lockfilePath := s.lockfilePath
-	currentResolver := s.resolver
-	s.mu.RUnlock()
-
 	for _, event := range params.Changes {
 		uri := string(event.URI)
-		if !isLockfileEvent(uri, lockfilePath) {
+		if !isIntentOrLockfileEvent(uri) {
 			continue
 		}
-
-		if lockfilePath == "" {
-			s.log.Printf("didChangeWatchedFiles: no lockfile path recorded; ignoring event for %s", uri)
-			continue
+		s.mu.RLock()
+		il := s.intentLookup
+		s.mu.RUnlock()
+		if il != nil {
+			il.Invalidate()
 		}
-
-		lf, err := lockfile.ReadLock(lockfilePath)
-		if err != nil {
-			s.log.Printf("didChangeWatchedFiles: re-reading lockfile %s: %v", lockfilePath, err)
-			continue
-		}
-
-		if currentResolver != nil {
-			if err := currentResolver.Reload(lf); err != nil {
-				s.log.Printf("didChangeWatchedFiles: reloading resolver: %v", err)
-				continue
-			}
-		} else {
-			newResolver, err := NewSchemaResolver(lf)
-			if err != nil {
-				s.log.Printf("didChangeWatchedFiles: building resolver: %v", err)
-				continue
-			}
-			s.mu.Lock()
-			s.resolver = newResolver
-			s.mu.Unlock()
-			currentResolver = newResolver
-		}
-		s.log.Printf("didChangeWatchedFiles: resolver reloaded from %s", lockfilePath)
-		// Invalidate all router cache entries: a previously unowned URI may
-		// now be owned (or vice versa) after the lockfile changes.
+		s.log.Printf("didChangeWatchedFiles: intent lookup invalidated for %s", uri)
 		s.router.InvalidateAll()
 		s.requeueAllOpenDocuments()
 		break

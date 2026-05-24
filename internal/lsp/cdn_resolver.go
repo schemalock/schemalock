@@ -42,8 +42,8 @@ type cdnResolver struct {
 
 	cacheDir string // on-disk schema cache path, typically ~/.schemalock/cache
 
-	vMu     sync.RWMutex
-	vCache  map[string]versionsEntry // key: ecosystem + "/" + group
+	vMu    sync.RWMutex
+	vCache map[string]versionsEntry // key: ecosystem + "/" + group
 
 	vFlight singleflight.Group
 

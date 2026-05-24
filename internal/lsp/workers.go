@@ -2,7 +2,6 @@ package lsp
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 
@@ -17,22 +16,19 @@ import (
 // job is one unit of work submitted to the [WorkerPool]: validate one version
 // of one document and publish the resulting diagnostics.
 // The resolver is captured at submission time so workers never read a shared
-// mutable field on the pool itself, avoiding data races when the resolver is
-// updated after initialize.
+// mutable field on the pool itself.
 //
-// When the chain resolved via the CDN (StateUnpinned or StatePreview),
-// schemaBytes and integrity carry the integrity-verified schema bytes from the
-// ResolveResult. The worker uses these directly when the lockfile resolver
-// returns ErrNoMatch, so CDN-fallback documents receive diagnostics even when
-// they are not recorded in schemalock.lock.
+// schemaBytes and integrity carry the integrity-verified schema bytes from
+// the resolver chain's ResolveResult (StatePinned/StateUnpinned/StatePreview).
+// Workers validate against these bytes directly — no lockfile-cache path
+// remains in the new intent-based design.
 type job struct {
 	ctx         context.Context
 	uri         string
 	version     uint32
 	text        string
-	resolver    *SchemaResolver // captured at Submit time; may be nil (skip validation)
-	schemaBytes []byte          // non-nil for CDN-resolved (Unpinned/Preview) docs
-	integrity   string          // SRI hash matching schemaBytes; used as compiler cache key
+	schemaBytes []byte // schema bytes from the resolver chain
+	integrity   string // SRI hash matching schemaBytes; used as compiler cache key
 }
 
 // WorkerDeps bundles the static dependencies injected into each worker
@@ -115,10 +111,10 @@ func (p *WorkerPool) process(j job) {
 		return
 	}
 
-	// If neither a lockfile resolver nor CDN schema bytes are available, we
-	// cannot validate. CDN-resolved jobs (Unpinned/Preview) may carry non-nil
-	// schemaBytes even when j.resolver is nil (no lockfile at initialize time).
-	if j.resolver == nil && len(j.schemaBytes) == 0 {
+	// If no schema bytes are available (StateUnindexable / StateError) there
+	// is nothing to validate against. Emit an explicit empty list so the
+	// editor clears any stale diagnostics for this version.
+	if len(j.schemaBytes) == 0 {
 		p.deps.Publish(j.ctx, j.uri, j.version, []lsp.Diagnostic{})
 		return
 	}
@@ -150,75 +146,14 @@ func (p *WorkerPool) process(j job) {
 			continue
 		}
 
-		// Attempt lockfile resolution first. When there is no lockfile resolver
-		// (e.g. initialize found no schemalock.lock), treat as ErrNoMatch so the
-		// CDN fallback bytes can take over.
-		var resolveErr error = ErrNoMatch
-		var entry resolvedEntry
-		if j.resolver != nil {
-			entry, resolveErr = j.resolver.Resolve(doc.APIVersion, doc.Kind)
-		}
-		useFallbackBytes := errors.Is(resolveErr, ErrNoMatch) && len(j.schemaBytes) > 0
-
-		if resolveErr != nil && !useFallbackBytes {
-			// ErrNoMatch with no fallback bytes, or some other resolver error:
-			// skip this document silently.
+		// Validate using the schema bytes supplied by the resolver chain.
+		// Integrity is verified as defence-in-depth (the chain already
+		// verified against the CDN manifest hash).
+		if vErr := registry.VerifyIntegrity(j.schemaBytes, j.integrity); vErr != nil {
 			continue
 		}
-
-		if j.ctx.Err() != nil {
-			return
-		}
-
-		var schemaBytes []byte
-		var compileKey string
-
-		if useFallbackBytes {
-			// CDN-resolved document (Unpinned/Preview): use the pre-fetched,
-			// integrity-verified bytes supplied by the caller. Verify integrity
-			// before compilation as a defence-in-depth check (the chain already
-			// verified them, but the job may have been queued slightly before the
-			// chain result was written).
-			if vErr := registry.VerifyIntegrity(j.schemaBytes, j.integrity); vErr != nil {
-				// Integrity mismatch on the bytes we were given — skip and emit
-				// no diagnostics rather than validating against a suspect schema.
-				continue
-			}
-			schemaBytes = j.schemaBytes
-			compileKey = j.integrity
-		} else {
-			// Lockfile-pinned document: read from cache or fetch from CDN.
-			var err error
-			schemaBytes, err = p.deps.Cache.ReadSchema(entry.Ecosystem, entry.Group, entry.ReleaseVersion, entry.Kind)
-			if errors.Is(err, cache.ErrNotFound) {
-				schemaBytes, err = p.deps.Registry.FetchSchema(j.ctx, entry.Ecosystem, entry.Group, entry.ReleaseVersion, entry.Kind)
-				if err != nil {
-					if j.ctx.Err() != nil {
-						return
-					}
-					p.deps.Publish(j.ctx, j.uri, j.version, []lsp.Diagnostic{{
-						Range: lsp.Range{
-							Start: lsp.Position{Line: 0, Character: 0},
-							End:   lsp.Position{Line: 0, Character: 0},
-						},
-						Severity: lsp.DiagnosticSeverityWarning,
-						Source:   "schemalock",
-						Message:  fmt.Sprintf("could not fetch schema for %s/%s: %s", doc.APIVersion, doc.Kind, err),
-					}})
-					return
-				}
-				// Write to cache (integrity-verified inside WriteSchema).
-				if werr := p.deps.Cache.WriteSchema(entry.Ecosystem, entry.Group, entry.ReleaseVersion, entry.Kind, entry.Integrity, schemaBytes); werr != nil {
-					// Log but don't abort — schemaBytes is still valid, we just
-					// couldn't persist it.
-					_ = werr
-				}
-			} else if err != nil {
-				// Unexpected read error; skip this document.
-				continue
-			}
-			compileKey = entry.Integrity
-		}
+		schemaBytes := j.schemaBytes
+		compileKey := j.integrity
 
 		if j.ctx.Err() != nil {
 			return

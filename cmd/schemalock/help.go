@@ -23,8 +23,9 @@ Usage:
   schemalock <subcommand> [flags]
 
 Subcommands:
-  lock     Fetch manifests from CDN and write schemalock.lock
-  verify   Check schemalock.lock against the live CDN manifest
+  verify   Validate every YAML manifest under --path against pinned schemas
+  add      Append or replace a name@version in the nearest schemalock.yaml
+  fmt      Canonicalize a schemalock.yaml (sort ecosystems and specs)
   serve    Run the LSP server on stdio (requires --stdio)
 
 Flags:

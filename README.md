@@ -47,45 +47,77 @@ for `schemalock --version`.
 
 ## Usage
 
-### `lock` — pin schemas from the CDN
-
-In a directory containing `schemalock.yaml`:
-
 ```bash
-schemalock lock
+schemalock verify                            # validate every YAML under cwd
+schemalock verify --path manifests/ --strict-pinned
+schemalock verify --no-strict   # tolerate unknown YAML fields
+schemalock add operator.victoriametrics.com@0.70.0
+schemalock add --file teamA/schemalock.yaml operator.victoriametrics.com@0.69.0
+schemalock fmt                               # canonicalize nearest schemalock.yaml
+schemalock fmt --file teamA/schemalock.yaml
+schemalock serve --stdio                     # LSP server for editors
 ```
 
-Or with explicit paths:
+### Hierarchical `schemalock.yaml`
 
-```bash
-schemalock lock \
-  --file     path/to/schemalock.yaml \
-  --lockfile path/to/schemalock.lock \
-  --registry https://cdn.schemalock.dev
-```
+`schemalock.yaml` can be nested. The effective pin set for a manifest is the
+**union** of every `schemalock.yaml` walking up from the manifest's
+directory, with the closest file winning on same-name pin conflicts.
 
-Reads `schemalock.yaml`, fetches the manifest for each declared operator
-version from the CDN, and writes a deterministic `schemalock.lock`
-pinning every schema's SHA-256 integrity hash.
+A nested file with `root: true` halts the walk — useful for sub-projects
+inside a monorepo that should not inherit grandparent pins.
 
-Example `schemalock.yaml`:
+Nested files (without `root: true`) may only declare `ecosystems:`; the
+`version:` field is root-only.
+
+Example root `schemalock.yaml`:
 
 ```yaml
 version: 1
 ecosystems:
   kubernetes:
+    - cert-manager.io@v1.16.1
     - operator.victoriametrics.com@0.70.0
 ```
 
-### `verify` — check for drift
+Example overlay at `teamA/schemalock.yaml`:
 
-```bash
-schemalock verify
+```yaml
+ecosystems:
+  kubernetes:
+    - operator.victoriametrics.com@0.69.0   # downgrade for teamA only
 ```
 
-Exits **0** when the lockfile matches the live CDN, **2** when any
-integrity hash or schema size has drifted, **1** on usage errors
-(missing file, malformed intent), **3** on network or I/O errors.
+### `verify` — CI drift gate
+
+```bash
+schemalock verify --path .
+```
+
+For each YAML document under `--path`:
+
+1. Walk up from the manifest's directory to build its effective pin set.
+2. If the `(group, kind)` is owned by a pinned version → validate against
+   the pinned schema (fetched on demand, cached in `~/.schemalock/cache/`).
+3. If not pinned → fall back to the latest schema on `cdn.schemalock.dev`
+   and warn (or fail, with `--strict-pinned`).
+
+Exits **0** when no manifest fails; non-zero otherwise.
+
+Unknown fields in any manifest (typos, deprecated keys not in the
+schema) fail verification by default. Pass `--no-strict` to match
+the LSP `strict: false` mode and tolerate them.
+
+### `add` and `fmt`
+
+`schemalock add <name@version>` appends or replaces a pin in the nearest
+existing `schemalock.yaml` (walks up from cwd). Use `--file <path>` to
+target a specific file — or to create a new overlay (the file is
+materialised on first write).
+
+`schemalock fmt [--file path]` canonicalises a single `schemalock.yaml`
+in place: ecosystem keys + spec lists sorted alphabetically, 2-space
+indent, single trailing newline. Works on both root and overlay files.
 
 ### `serve --stdio` — LSP server for editors
 
@@ -95,24 +127,21 @@ schemalock serve --stdio
 
 Speaks the Language Server Protocol over stdin/stdout. Editors spawn
 this process and communicate via JSON-RPC framed with `Content-Length`
-headers. The server locates `schemalock.lock` by walking up from the
-workspace root and validates every open YAML document against the
-appropriate schema on `textDocument/didOpen` and `textDocument/didChange`.
+headers. The server resolves each open YAML document through a chain:
+
+1. Per-document override (set by the editor for "preview this version").
+2. Intent — walk up from the document's directory through every
+   `schemalock.yaml` to find the effective pinned version, then fetch
+   that version's schema from the CDN cache (or CDN directly).
+3. CDN fallback — latest version published for the document's
+   `(group, kind)` when no intent pin matches.
 
 Capabilities advertised: full text-document sync, completion, hover,
 definition, references, document symbols.
 
-For YAML documents whose `apiVersion`+`kind` is not in the lockfile, the
-server consults a chain of resolvers:
-
-1. Per-document override (set by the editor for "preview this version").
-2. Lockfile entry, fetched from the CDN cache (or the CDN directly).
-3. CDN fallback — latest version published for the document's
-   `(group, kind)`.
-
 Schemas fetched from the CDN are verified against their integrity hash
-before being written to the disk cache (`~/.schemalock/cache/`,
-byte-identical mirror of the CDN URL layout).
+(from `manifest.json` on the CDN) before being written to the disk cache
+(`~/.schemalock/cache/`, byte-identical mirror of the CDN URL layout).
 
 For YAML documents the server cannot resolve a schema for (plain
 manifests, GitHub workflows, etc.), the server spawns

@@ -9,13 +9,13 @@ import (
 
 func TestBaselineDiagnostics(t *testing.T) {
 	tests := []struct {
-		name        string
-		text        string
-		wantLen     int   // expected number of diagnostics
-		wantLine    uint32
-		wantChar    uint32
-		wantNonNil  bool  // result slice must be non-nil
-		wantSource  string
+		name       string
+		text       string
+		wantLen    int // expected number of diagnostics
+		wantLine   uint32
+		wantChar   uint32
+		wantNonNil bool // result slice must be non-nil
+		wantSource string
 	}{
 		{
 			name:       "valid YAML returns empty non-nil slice",
