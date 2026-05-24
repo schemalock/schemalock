@@ -69,6 +69,10 @@ func main() {
 		err = runLock(ctx, rest, os.Stdout, os.Stderr)
 	case "verify":
 		err = runVerify(ctx, rest, os.Stdout, os.Stderr)
+	case "fmt":
+		err = runFmt(ctx, rest, os.Stdout, os.Stderr)
+	case "add":
+		err = runAdd(ctx, rest, os.Stdout, os.Stderr)
 	case "serve":
 		err = runServe(ctx, rest, os.Stdin, os.Stdout, os.Stderr)
 	case "-h", "--help", "help":
