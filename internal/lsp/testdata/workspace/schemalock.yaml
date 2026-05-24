@@ -1,0 +1,4 @@
+version: 1
+ecosystems:
+  kubernetes:
+    - operator.victoriametrics.com@0.70.0

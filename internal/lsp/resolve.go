@@ -3,10 +3,10 @@ package lsp
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/schemalock/app/internal/intent"
 	"github.com/schemalock/app/internal/registry"
 	"github.com/schemalock/app/internal/yamldoc"
 )
@@ -16,18 +16,17 @@ type State int
 
 const (
 	// StateUnindexable means the document has no apiVersion+kind, or the group
-	// is not indexed by the CDN or lockfile.
+	// is not indexed by the CDN or intent file.
 	StateUnindexable State = iota
-	// StatePinned means the schema came from a lockfile-pinned entry and was
-	// integrity-verified.
+	// StatePinned means the schema came from an intent-pinned entry.
 	StatePinned
 	// StateUnpinned means the schema came from the CDN's latest version with no
-	// lockfile pin.
+	// intent pin.
 	StateUnpinned
 	// StatePreview means the schema came from a per-document override version.
 	StatePreview
-	// StateError means a resolution step failed (integrity mismatch, network
-	// error, etc.). ErrMsg carries the details.
+	// StateError means a resolution step failed (network error, etc.).
+	// ErrMsg carries the details.
 	StateError
 )
 
@@ -38,32 +37,30 @@ type ResolveResult struct {
 	Group     string
 	Kind      string
 	Version   string
-	Source    string // "lockfile", "override", "cdn-latest", "cdn-error", ""
+	Source    string // "intent", "override", "cdn-latest", "cdn-error", ""
 	Schema    []byte
 	Integrity string
 	ErrMsg    string // non-empty when State == StateError; surfaced in tooltip
 }
 
-// resolverChain composes the three sub-resolvers: lockfile-pinned,
+// resolverChain composes the three sub-resolvers: intent-pinned,
 // per-document override, and CDN fallback.
 type resolverChain struct {
-	lockResolver    *SchemaResolver
+	intentLookup    *intent.Lookup
 	overrides       *OverrideStore
 	cdn             *cdnResolver
 	fallbackEnabled bool
-	cacheDir        string // for pinned schema disk reads (matches cdn.cacheDir)
 }
 
-// newResolverChain constructs the chain. lock, ov, and cdn may be nil; the
+// newResolverChain constructs the chain. il, ov, and cdn may be nil; the
 // corresponding resolution step is skipped. fallbackEnabled guards the CDN
 // fallback path (step 3).
-func newResolverChain(lock *SchemaResolver, ov *OverrideStore, cdn *cdnResolver, fallbackEnabled bool, cacheDir string) *resolverChain {
+func newResolverChain(il *intent.Lookup, ov *OverrideStore, cdn *cdnResolver, fallbackEnabled bool) *resolverChain {
 	return &resolverChain{
-		lockResolver:    lock,
+		intentLookup:    il,
 		overrides:       ov,
 		cdn:             cdn,
 		fallbackEnabled: fallbackEnabled,
-		cacheDir:        cacheDir,
 	}
 }
 
@@ -71,9 +68,10 @@ func newResolverChain(lock *SchemaResolver, ov *OverrideStore, cdn *cdnResolver,
 //
 // Resolution order (most-specific user intent wins):
 //  1. Per-document override — explicit picker selection, highest priority so
-//     the user can preview a non-pinned version even when the lockfile has an
-//     entry for this (group, kind).
-//  2. Lockfile — integrity-verified pinned schema from disk (or CDN re-fetch).
+//     the user can preview a non-pinned version even when the intent has an
+//     entry for this group.
+//  2. Intent-pinned — version pinned by the nearest schemalock.yaml hierarchy
+//     for the document's directory. Fetched via cdn.ResolveAt.
 //  3. CDN fallback — latest version fetched from CDN.
 func (c *resolverChain) Resolve(ctx context.Context, uri, text string) ResolveResult {
 	// Parse the document to extract apiVersion and kind.
@@ -93,7 +91,7 @@ func (c *resolverChain) Resolve(ctx context.Context, uri, text string) ResolveRe
 	}
 
 	// 1. Per-document override (preview). Explicit session intent: this beats
-	// the lockfile so the user can audit a different version against a
+	// the intent pin so the user can audit a different version against a
 	// committed pin without removing the pin.
 	if c.overrides != nil && c.cdn != nil {
 		if o, ok := c.overrides.Get(uri); ok && o.Group == group {
@@ -120,63 +118,32 @@ func (c *resolverChain) Resolve(ctx context.Context, uri, text string) ResolveRe
 		}
 	}
 
-	// 2. Lockfile.
-	if c.lockResolver != nil {
-		if entry, err := c.lockResolver.Resolve(apiVersion, kind); err == nil {
-			// Read schema bytes from disk; verify integrity against lockfile hash.
-			path := filepath.Join(c.cacheDir, entry.Ecosystem, entry.Group, entry.ReleaseVersion, entry.Kind+".json")
-			if body, err := os.ReadFile(path); err == nil {
-				if vErr := registry.VerifyIntegrity(body, entry.Integrity); vErr == nil {
-					return ResolveResult{
-						State:     StatePinned,
-						Group:     entry.Group,
-						Kind:      entry.Kind,
-						Version:   entry.ReleaseVersion,
-						Source:    "lockfile",
-						Schema:    body,
-						Integrity: entry.Integrity,
-					}
-				}
-				// Integrity mismatch — surface as Error.
-				return ResolveResult{
-					State:   StateError,
-					Group:   entry.Group,
-					Kind:    entry.Kind,
-					Version: entry.ReleaseVersion,
-					Source:  "lockfile",
-					ErrMsg:  "integrity mismatch on cached schema",
-				}
-			}
-			// Disk miss — try to fetch via CDN's ResolveAt (which writes back to cache).
-			if c.cdn != nil {
-				res, err := c.cdn.ResolveAt(ctx, entry.Ecosystem, entry.Group, entry.Kind, entry.ReleaseVersion)
+	// 2. Intent-pinned: look up the pinned version for this document's directory.
+	if c.intentLookup != nil && c.cdn != nil {
+		dir := dirFromURI(uri)
+		if dir != "" {
+			version, ok, lookupErr := c.intentLookup.PinFor(dir, "kubernetes", group)
+			if lookupErr == nil && ok {
+				res, err := c.cdn.ResolveAt(ctx, "kubernetes", group, kind, version)
 				if err == nil {
 					return ResolveResult{
 						State:     StatePinned,
-						Group:     entry.Group,
-						Kind:      entry.Kind,
-						Version:   entry.ReleaseVersion,
-						Source:    "lockfile",
+						Group:     group,
+						Kind:      kind,
+						Version:   version,
+						Source:    "intent",
 						Schema:    res.SchemaBytes,
 						Integrity: res.Integrity,
 					}
 				}
 				return ResolveResult{
 					State:   StateError,
-					Group:   entry.Group,
-					Kind:    entry.Kind,
-					Version: entry.ReleaseVersion,
-					Source:  "lockfile",
+					Group:   group,
+					Kind:    kind,
+					Version: version,
+					Source:  "cdn-error",
 					ErrMsg:  err.Error(),
 				}
-			}
-			return ResolveResult{
-				State:   StateError,
-				Group:   entry.Group,
-				Kind:    entry.Kind,
-				Version: entry.ReleaseVersion,
-				Source:  "lockfile",
-				ErrMsg:  "schema not in disk cache and no CDN configured",
 			}
 		}
 	}
@@ -212,4 +179,18 @@ func groupFromAPIVersion(apiVersion string) string {
 		return ""
 	}
 	return group
+}
+
+// dirFromURI converts a file:// document URI to its containing directory.
+// Returns "" for non-file URIs.
+func dirFromURI(docURI string) string {
+	const prefix = "file://"
+	if !strings.HasPrefix(docURI, prefix) {
+		return ""
+	}
+	path := docURI[len(prefix):]
+	if path == "" {
+		return ""
+	}
+	return filepath.Dir(path)
 }

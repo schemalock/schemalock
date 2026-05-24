@@ -12,6 +12,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/schemalock/app/internal/cache"
+	"github.com/schemalock/app/internal/intent"
 	"github.com/schemalock/app/internal/lsp/adapter/yamlls"
 	"github.com/schemalock/app/internal/lsp/protocol"
 	"github.com/schemalock/app/internal/registry"
@@ -36,18 +37,13 @@ type Server struct {
 	docs     *DocumentStore
 	cacheDir *cache.Cache
 	reg      *registry.Client
-	compiler *validator.Compiler
-	resolver *SchemaResolver // nil until initialize succeeds
-	workers  *WorkerPool
+	compiler     *validator.Compiler
+	intentLookup *intent.Lookup // nil until initialize succeeds
+	workers      *WorkerPool
 
-	// mu guards lockfilePath and resolver for concurrent access.
+	// mu guards intentLookup for concurrent access.
 	// Handlers run in separate goroutines on the jsonrpc2 read path.
 	mu sync.RWMutex
-
-	// lockfilePath is the absolute path to schemalock.lock as resolved during
-	// initialize. Used by DidChangeWatchedFiles to re-read the same file
-	// without re-walking the workspace tree.
-	lockfilePath string
 
 	// cancelMu guards cancelFuncs for concurrent access.
 	// DidOpen/DidChange/DidClose/DidChangeWatchedFiles can run concurrently
@@ -313,11 +309,6 @@ func (s *Server) publishDiagnostics(ctx context.Context, uri string, version uin
 // integrity are threaded into the job so the worker can validate even when the
 // lockfile resolver returns ErrNoMatch for this document.
 func (s *Server) enqueueValidation(uri, text string, version uint32, res ResolveResult) {
-	// Read resolver under mu so we capture a consistent snapshot.
-	s.mu.RLock()
-	resolver := s.resolver
-	s.mu.RUnlock()
-
 	s.cancelMu.Lock()
 	if cancel, ok := s.cancelFuncs[uri]; ok {
 		cancel()
@@ -331,7 +322,7 @@ func (s *Server) enqueueValidation(uri, text string, version uint32, res Resolve
 		uri:         uri,
 		version:     version,
 		text:        text,
-		resolver:    resolver, // captured snapshot; nil until initialize
+		resolver:    nil, // lockfile resolver removed; CDN schema bytes used instead
 		schemaBytes: res.Schema,
 		integrity:   res.Integrity,
 	})

@@ -2,24 +2,29 @@ package lsp
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
-	"github.com/schemalock/app/internal/lockfile"
+	"github.com/schemalock/app/internal/intent"
+	"github.com/schemalock/app/internal/registry"
 )
 
 // routerTestSchema is a minimal valid JSON Schema used for all router tests.
 const routerTestSchema = `{"type":"object"}`
 
-// setupRouterFixture builds a LockFile + on-disk schema cache for the router
-// tests. Returns the *resolverChain backed by the lockfile and disk cache.
+// setupRouterFixture builds an intent workspace + fake CDN for the router
+// tests. Returns the workspaceDir containing schemalock.yaml and the
+// *resolverChain backed by the intent lookup and CDN.
 //
-// The schema is written to disk so the chain's Pinned path succeeds without a
-// CDN fetch (cdn is nil). cdn=nil, fallbackEnabled=false → lockfile-only
-// behavior identical to the old Router.
-func setupRouterFixture(t *testing.T) *resolverChain {
+// Use ownedURIInDir(workspaceDir) to build file URIs that the intent walk can
+// resolve; URIs outside workspaceDir will fall through to CDN-latest which
+// requires versions.json (not served by this fixture).
+func setupRouterFixture(t *testing.T) (workspaceDir string, chain *resolverChain) {
 	t.Helper()
 	const (
 		group   = "operator.victoriametrics.com"
@@ -27,38 +32,39 @@ func setupRouterFixture(t *testing.T) *resolverChain {
 		kind    = "VMCluster"
 	)
 	schemaBody := routerTestSchema
-	integ := integrityOf(schemaBody)
-	cacheDir := t.TempDir()
 
-	lf := lockfile.LockFile{
-		Version:     1,
-		Registry:    "https://cdn.schemalock.dev",
-		GeneratedAt: "2026-01-01T00:00:00Z",
-		Entries: []lockfile.LockEntry{
-			{
-				ID:   "kubernetes/" + group + "@" + version,
-				Base: "kubernetes/" + group + "/" + version + "/",
-				Schemas: map[string]lockfile.SchemaEntry{
-					kind: {Integrity: integ, Size: len(schemaBody)},
-				},
-			},
-		},
-	}
-
-	// Write schema bytes to disk cache so the Pinned path succeeds.
-	path := filepath.Join(cacheDir, "kubernetes", group, version, kind+".json")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(schemaBody), 0o644); err != nil {
+	// Write a root schemalock.yaml pinning operator.victoriametrics.com@0.70.0.
+	workspaceDir = t.TempDir()
+	content := "version: 1\necosystems:\n  kubernetes:\n    - " + group + "@" + version + "\n"
+	if err := os.WriteFile(filepath.Join(workspaceDir, "schemalock.yaml"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	sr, err := NewSchemaResolver(lf)
-	if err != nil {
-		t.Fatalf("NewSchemaResolver: %v", err)
-	}
-	return newResolverChain(sr, NewOverrideStore(), nil, false, cacheDir)
+	// Fake CDN serving the manifest and schema for the pinned version.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/kubernetes/" + group + "/" + version + "/manifest.json":
+			body := `{"version":1,"kinds":{"` + kind + `":{"integrity":"` + integrityOf(schemaBody) + `","size":` + sizeStr(schemaBody) + `}}}`
+			_, _ = w.Write([]byte(body))
+		case "/kubernetes/" + group + "/" + version + "/" + kind + ".json":
+			_, _ = w.Write([]byte(schemaBody))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	rc := newCDNResolver(registry.NewClient(srv.URL), 5*time.Minute, 24*time.Hour, 30*time.Second)
+	rc.cacheDir = t.TempDir()
+
+	il := intent.NewLookup()
+	return workspaceDir, newResolverChain(il, NewOverrideStore(), rc, true)
+}
+
+// ownedURIInDir returns a file URI inside dir so the intent walk finds
+// the schemalock.yaml written by setupRouterFixture.
+func ownedURIInDir(dir, name string) string {
+	return "file://" + filepath.Join(dir, name)
 }
 
 const vmClusterDoc = `apiVersion: operator.victoriametrics.com/v1beta1
@@ -90,18 +96,23 @@ const invalidYAML = `apiVersion: [unclosed
 `
 
 // TestRouter_OwnedURI verifies that IsOwned returns true for a document whose
-// apiVersion+kind resolves to a lock entry.
+// apiVersion+kind resolves via the intent-pinned path.
 func TestRouter_OwnedURI(t *testing.T) {
-	r := NewRouter(setupRouterFixture(t))
-	if !r.IsOwned(context.Background(), "file:///a.yaml", vmClusterDoc) {
-		t.Error("IsOwned returned false for an owned document")
+	dir, chain := setupRouterFixture(t)
+	r := NewRouter(chain)
+	uri := ownedURIInDir(dir, "a.yaml")
+	if !r.IsOwned(context.Background(), uri, vmClusterDoc) {
+		t.Error("IsOwned returned false for an owned document (intent-pinned group)")
 	}
 }
 
 // TestRouter_UnownedURI verifies that IsOwned returns false when the
-// apiVersion+kind is not present in the lock file.
+// apiVersion+kind is not present in the CDN. Uses file:///a.yaml (outside the
+// workspace) to exercise the CDN-fallback path; apps/v1 is not indexed so
+// StateUnindexable is returned.
 func TestRouter_UnownedURI(t *testing.T) {
-	r := NewRouter(setupRouterFixture(t))
+	_, chain := setupRouterFixture(t)
+	r := NewRouter(chain)
 	if r.IsOwned(context.Background(), "file:///a.yaml", unownedDoc) {
 		t.Error("IsOwned returned true for an unowned document (apps/v1 Deployment)")
 	}
@@ -110,8 +121,9 @@ func TestRouter_UnownedURI(t *testing.T) {
 // TestRouter_CoreType verifies that core Kubernetes types (no "/" in apiVersion)
 // are treated as unowned because the resolver does not support them.
 func TestRouter_CoreType(t *testing.T) {
-	r := NewRouter(setupRouterFixture(t))
-	if r.IsOwned(context.Background(), "file:///a.yaml", coreTypeDoc) {
+	dir, chain := setupRouterFixture(t)
+	r := NewRouter(chain)
+	if r.IsOwned(context.Background(), ownedURIInDir(dir, "a.yaml"), coreTypeDoc) {
 		t.Error("IsOwned returned true for a core type (v1/Pod)")
 	}
 }
@@ -119,16 +131,18 @@ func TestRouter_CoreType(t *testing.T) {
 // TestRouter_InvalidYAML verifies that malformed YAML does not panic and
 // returns false.
 func TestRouter_InvalidYAML(t *testing.T) {
-	r := NewRouter(setupRouterFixture(t))
-	if r.IsOwned(context.Background(), "file:///a.yaml", invalidYAML) {
+	dir, chain := setupRouterFixture(t)
+	r := NewRouter(chain)
+	if r.IsOwned(context.Background(), ownedURIInDir(dir, "a.yaml"), invalidYAML) {
 		t.Error("IsOwned returned true for invalid YAML")
 	}
 }
 
 // TestRouter_EmptyDocument verifies that an empty document returns false.
 func TestRouter_EmptyDocument(t *testing.T) {
-	r := NewRouter(setupRouterFixture(t))
-	if r.IsOwned(context.Background(), "file:///a.yaml", emptyDoc) {
+	dir, chain := setupRouterFixture(t)
+	r := NewRouter(chain)
+	if r.IsOwned(context.Background(), ownedURIInDir(dir, "a.yaml"), emptyDoc) {
 		t.Error("IsOwned returned true for an empty document")
 	}
 }
@@ -136,8 +150,9 @@ func TestRouter_EmptyDocument(t *testing.T) {
 // TestRouter_NoKind verifies that a document with only apiVersion (no kind)
 // returns false.
 func TestRouter_NoKind(t *testing.T) {
-	r := NewRouter(setupRouterFixture(t))
-	if r.IsOwned(context.Background(), "file:///a.yaml", noKindDoc) {
+	dir, chain := setupRouterFixture(t)
+	r := NewRouter(chain)
+	if r.IsOwned(context.Background(), ownedURIInDir(dir, "a.yaml"), noKindDoc) {
 		t.Error("IsOwned returned true for a document with apiVersion but no kind")
 	}
 }
@@ -154,8 +169,9 @@ func TestRouter_NilChain(t *testing.T) {
 // TestRouter_CacheStability verifies that repeated IsOwned calls for the same
 // URI return a consistent result without re-parsing.
 func TestRouter_CacheStability(t *testing.T) {
-	r := NewRouter(setupRouterFixture(t))
-	uri := "file:///cache.yaml"
+	dir, chain := setupRouterFixture(t)
+	r := NewRouter(chain)
+	uri := ownedURIInDir(dir, "cache.yaml")
 	first := r.IsOwned(context.Background(), uri, vmClusterDoc)
 	second := r.IsOwned(context.Background(), uri, vmClusterDoc)
 	if first != second {
@@ -169,8 +185,9 @@ func TestRouter_CacheStability(t *testing.T) {
 // TestRouter_Invalidate verifies that Invalidate clears the cached decision so
 // that the next call re-evaluates from the provided text.
 func TestRouter_Invalidate(t *testing.T) {
-	r := NewRouter(setupRouterFixture(t))
-	uri := "file:///inv.yaml"
+	dir, chain := setupRouterFixture(t)
+	r := NewRouter(chain)
+	uri := ownedURIInDir(dir, "inv.yaml")
 
 	// Populate cache for owned document.
 	if !r.IsOwned(context.Background(), uri, vmClusterDoc) {
@@ -186,9 +203,10 @@ func TestRouter_Invalidate(t *testing.T) {
 
 // TestRouter_InvalidateAll verifies that InvalidateAll clears the entire cache.
 func TestRouter_InvalidateAll(t *testing.T) {
-	r := NewRouter(setupRouterFixture(t))
-	uriA := "file:///a.yaml"
-	uriB := "file:///b.yaml"
+	dir, chain := setupRouterFixture(t)
+	r := NewRouter(chain)
+	uriA := ownedURIInDir(dir, "a.yaml")
+	uriB := ownedURIInDir(dir, "b.yaml")
 
 	// Populate cache for both URIs.
 	r.IsOwned(context.Background(), uriA, vmClusterDoc)
@@ -211,8 +229,9 @@ func TestRouter_InvalidateAll(t *testing.T) {
 // TestRouter_Concurrent runs IsOwned and Invalidate concurrently on the same
 // URI to verify race-freedom under -race.
 func TestRouter_Concurrent(t *testing.T) {
-	r := NewRouter(setupRouterFixture(t))
-	uri := "file:///race.yaml"
+	dir, chain := setupRouterFixture(t)
+	r := NewRouter(chain)
+	uri := ownedURIInDir(dir, "race.yaml")
 
 	const goroutines = 20
 	var wg sync.WaitGroup

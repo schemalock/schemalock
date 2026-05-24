@@ -18,8 +18,11 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,19 +46,19 @@ func strictTestSchema(t *testing.T) []byte {
 	return b
 }
 
-// setupStrictWorkspace creates a temp workspace dir containing schemalock.lock
-// that pins the hand-built schema, and a temp cache dir with the schema bytes
-// already written. Returns (workspaceDir, cacheDir).
+// setupStrictWorkspace creates a temp workspace dir with schemalock.yaml and
+// schemalock.lock, a temp cache dir with the schema bytes pre-written, and a
+// fake CDN server that serves the manifest. Returns (workspaceDir, cacheDir, cdnURL).
 //
 // The schema is pinned under ecosystem=kubernetes,
 // group=operator.example.com, version=v1, kind=VMCluster.
-func setupStrictWorkspace(t *testing.T) (workspaceDir string, cacheDir string) {
+func setupStrictWorkspace(t *testing.T) (workspaceDir string, cacheDir string, cdnURL string) {
 	t.Helper()
 
 	schemaData := strictTestSchema(t)
 	integrity := registry.ComputeIntegrity(schemaData)
 
-	// Workspace dir with schemalock.lock.
+	// Workspace dir with schemalock.lock and schemalock.yaml.
 	workspaceDir = t.TempDir()
 	lockContent := `version: 1
 registry: https://cdn.schemalock.dev
@@ -72,14 +75,34 @@ entries:
 		t.Fatalf("write schemalock.lock: %v", err)
 	}
 
-	// Cache dir with the schema bytes pre-written (bypasses CDN fetch).
+	// schemalock.yaml pins the same group so the intent-based resolver finds it.
+	intentContent := "version: 1\necosystems:\n  kubernetes:\n    - operator.example.com@v1\n"
+	if err := os.WriteFile(filepath.Join(workspaceDir, "schemalock.yaml"), []byte(intentContent), 0o644); err != nil {
+		t.Fatalf("write schemalock.yaml: %v", err)
+	}
+
+	// Cache dir with the schema bytes pre-written.
 	cacheDir = t.TempDir()
 	c := cache.New(cacheDir)
 	if err := c.WriteSchema("kubernetes", "operator.example.com", "v1", "VMCluster", integrity, schemaData); err != nil {
 		t.Fatalf("write schema to cache: %v", err)
 	}
 
-	return workspaceDir, cacheDir
+	// Fake CDN that serves only the manifest for operator.example.com/v1.
+	// The schema bytes are served from disk cache (cdnResolver checks cache first).
+	manifestBody := fmt.Sprintf(`{"version":1,"kinds":{"VMCluster":{"integrity":%q,"size":%d}}}`,
+		integrity, len(schemaData))
+	cdnSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/kubernetes/operator.example.com/v1/manifest.json" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(manifestBody))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(cdnSrv.Close)
+
+	return workspaceDir, cacheDir, cdnSrv.URL
 }
 
 // intToStr converts an int to a decimal string without importing strconv.
@@ -88,10 +111,9 @@ func intToStr(n int) string {
 	return string(b)
 }
 
-// strictSession wraps the session setup for strict-mode tests.
-// It creates a server wired to the temp cache, starts Run in a goroutine,
-// and returns write/read/waitDone helpers matching the newSmokeSession pattern.
-func newStrictSession(t *testing.T, workspaceDir, cacheDir string) (
+// newStrictSession creates a server wired to the temp cache and the given CDN,
+// starts Run in a goroutine, and returns write/read/waitDone helpers.
+func newStrictSession(t *testing.T, workspaceDir, cacheDir, cdnURL string) (
 	writeFn func(any),
 	readFn func() map[string]any,
 	waitDone func(time.Duration) error,
@@ -99,7 +121,7 @@ func newStrictSession(t *testing.T, workspaceDir, cacheDir string) (
 	t.Helper()
 
 	c := cache.New(cacheDir)
-	reg := registry.NewClient("http://127.0.0.1:0") // no CDN needed
+	reg := registry.NewClient(cdnURL)
 	logger := log.New(io.Discard, "", 0)
 
 	srv := lsp.NewServer(lsp.Config{
@@ -210,8 +232,8 @@ func readUntilDiagnostics(t *testing.T, readFn func() map[string]any, timeout ti
 // document with a typo field ("retnionPeriod") in default strict-mode
 // produces exactly one Error diagnostic whose message contains the opt-out hint.
 func TestStrictMode_TypoInDefaultMode_OneError(t *testing.T) {
-	workspaceDir, cacheDir := setupStrictWorkspace(t)
-	write, read, waitDone := newStrictSession(t, workspaceDir, cacheDir)
+	workspaceDir, cacheDir, cdnURL := setupStrictWorkspace(t)
+	write, read, waitDone := newStrictSession(t, workspaceDir, cacheDir, cdnURL)
 
 	typoText, err := os.ReadFile("testdata/strict/vmcluster-typo.yaml")
 	if err != nil {
@@ -289,8 +311,8 @@ func TestStrictMode_TypoInDefaultMode_OneError(t *testing.T) {
 // same typo document with strict:false produces zero diagnostics (the unknown
 // field is silently accepted).
 func TestStrictMode_TypoWithStrictOff_ZeroDiagnostics(t *testing.T) {
-	workspaceDir, cacheDir := setupStrictWorkspace(t)
-	write, read, waitDone := newStrictSession(t, workspaceDir, cacheDir)
+	workspaceDir, cacheDir, cdnURL := setupStrictWorkspace(t)
+	write, read, waitDone := newStrictSession(t, workspaceDir, cacheDir, cdnURL)
 
 	typoText, err := os.ReadFile("testdata/strict/vmcluster-typo.yaml")
 	if err != nil {
@@ -338,8 +360,8 @@ func TestStrictMode_TypoWithStrictOff_ZeroDiagnostics(t *testing.T) {
 // document (no typos) in default strict mode produces zero diagnostics.
 // This is a regression guard — the rewrite must not flag valid fields.
 func TestStrictMode_ValidDocDefaultMode_ZeroDiagnostics(t *testing.T) {
-	workspaceDir, cacheDir := setupStrictWorkspace(t)
-	write, read, waitDone := newStrictSession(t, workspaceDir, cacheDir)
+	workspaceDir, cacheDir, cdnURL := setupStrictWorkspace(t)
+	write, read, waitDone := newStrictSession(t, workspaceDir, cacheDir, cdnURL)
 
 	validText, err := os.ReadFile("testdata/strict/vmcluster-valid.yaml")
 	if err != nil {
@@ -388,8 +410,8 @@ func TestStrictMode_ValidDocDefaultMode_ZeroDiagnostics(t *testing.T) {
 // The annotations schema uses additionalProperties:{type:string}, which
 // WrapStrict must leave unchanged (it already has an additionalProperties value).
 func TestStrictMode_AnnotationsAlwaysAllowed_DefaultMode(t *testing.T) {
-	workspaceDir, cacheDir := setupStrictWorkspace(t)
-	write, read, waitDone := newStrictSession(t, workspaceDir, cacheDir)
+	workspaceDir, cacheDir, cdnURL := setupStrictWorkspace(t)
+	write, read, waitDone := newStrictSession(t, workspaceDir, cacheDir, cdnURL)
 
 	annotText, err := os.ReadFile("testdata/strict/vmcluster-annotations.yaml")
 	if err != nil {
@@ -441,8 +463,8 @@ func TestStrictMode_AnnotationsAlwaysAllowed_DefaultMode(t *testing.T) {
 //   - "retnionPeriod" at spec level  (LSP line 5, char 2)
 //   - "requestsLBEnabled" inside spec.clusterConfig (LSP line 7, char 4)
 func TestStrictMode_MultipleTyposAtDifferentDepths_OneErrorEach(t *testing.T) {
-	workspaceDir, cacheDir := setupStrictWorkspace(t)
-	write, read, waitDone := newStrictSession(t, workspaceDir, cacheDir)
+	workspaceDir, cacheDir, cdnURL := setupStrictWorkspace(t)
+	write, read, waitDone := newStrictSession(t, workspaceDir, cacheDir, cdnURL)
 
 	multiTypoText, err := os.ReadFile("testdata/strict/vmcluster-multi-typo.yaml")
 	if err != nil {
@@ -543,8 +565,8 @@ func TestStrictMode_MultipleTyposAtDifferentDepths_OneErrorEach(t *testing.T) {
 // produce no diagnostics. This covers the x-kubernetes-preserve-unknown-fields
 // expansion pattern.
 func TestStrictMode_PreserveUnknownFieldsRegion_ZeroDiagnostics(t *testing.T) {
-	workspaceDir, cacheDir := setupStrictWorkspace(t)
-	write, read, waitDone := newStrictSession(t, workspaceDir, cacheDir)
+	workspaceDir, cacheDir, cdnURL := setupStrictWorkspace(t)
+	write, read, waitDone := newStrictSession(t, workspaceDir, cacheDir, cdnURL)
 
 	preservedText, err := os.ReadFile("testdata/strict/vmcluster-preserved.yaml")
 	if err != nil {
