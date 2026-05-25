@@ -89,7 +89,7 @@ func bootstrapKindCompletions(
 	for i, kind := range kinds {
 		items = append(items, lsp.CompletionItem{
 			Label:      kind,
-			Kind:       completionKindEnum,
+			Kind:       completionKindEnumMember,
 			Detail:     "Kind from " + group + " @ " + version,
 			FilterText: kind,
 			SortText:   fmt.Sprintf("%04d_%s", i, kind),

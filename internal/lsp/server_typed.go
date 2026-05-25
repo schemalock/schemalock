@@ -357,7 +357,7 @@ func (s *Server) Completion(ctx context.Context, params *lsp.CompletionParams) (
 		// Schemalock-owned: run native completion path with res.Schema available.
 		// Pass res so ownedCompletion can use CDN schema bytes when the lockfile
 		// resolver returns ErrNoMatch.
-		result, err := s.ownedCompletion(params, text, res)
+		result, err := s.ownedCompletion(ctx, params, text, res)
 		if err != nil {
 			return nil, err
 		}
@@ -373,7 +373,7 @@ func (s *Server) Completion(ctx context.Context, params *lsp.CompletionParams) (
 		// StateError or StateUnindexable: try native bootstrap first (it handles
 		// the apiVersion+kind bootstrap even for unresolved documents), then
 		// proxy to yaml-ls.
-		result, err := s.ownedCompletion(params, text, res)
+		result, err := s.ownedCompletion(ctx, params, text, res)
 		if err != nil {
 			return nil, err
 		}
@@ -404,7 +404,7 @@ func (s *Server) Completion(ctx context.Context, params *lsp.CompletionParams) (
 // ErrNoMatch but res.Schema is non-nil (CDN-resolved Unpinned/Preview state),
 // ownedCompletion compiles the schema from res.Schema directly so that
 // completion works for documents not recorded in schemalock.lock.
-func (s *Server) ownedCompletion(params *lsp.CompletionParams, text string, res ResolveResult) (*lsp.CompletionList, error) {
+func (s *Server) ownedCompletion(ctx context.Context, params *lsp.CompletionParams, text string, res ResolveResult) (*lsp.CompletionList, error) {
 	empty := &lsp.CompletionList{IsIncomplete: false, Items: []lsp.CompletionItem{}}
 
 	docs, err := yamldoc.Parse([]byte(text))
@@ -417,6 +417,22 @@ func (s *Server) ownedCompletion(params *lsp.CompletionParams, text string, res 
 		Line:      params.Position.Line,
 		Character: params.Position.Character,
 	}, doc)
+
+	wordRange := wordRangeAt(text, lsp.Position{
+		Line:      params.Position.Line,
+		Character: params.Position.Character,
+	})
+
+	// Bootstrap kind completion: when apiVersion is set but kind is empty,
+	// return one item per kind from the operator manifest.
+	s.mu.RLock()
+	intentLookup := s.intentLookup
+	s.mu.RUnlock()
+
+	uri := string(params.TextDocument.URI)
+	if items := bootstrapKindCompletions(ctx, doc, cursorCtx, uri, intentLookup, s.cdnResolver, wordRange); items != nil {
+		return &lsp.CompletionList{IsIncomplete: false, Items: items}, nil
+	}
 
 	if doc.APIVersion == "" || doc.Kind == "" {
 		return empty, nil
@@ -436,7 +452,7 @@ func (s *Server) ownedCompletion(params *lsp.CompletionParams, text string, res 
 
 	if cursorCtx.IsKeyPosition {
 		parentSchema := schemaPropertiesAt(compiled, cursorCtx.ParentPointer)
-		items := completionItemsForProperties(parentSchema, cursorCtx.ExistingKeys)
+		items := completionItemsForProperties(parentSchema, cursorCtx.ExistingKeys, wordRange)
 		if items == nil {
 			items = []lsp.CompletionItem{}
 		}
@@ -445,7 +461,7 @@ func (s *Server) ownedCompletion(params *lsp.CompletionParams, text string, res 
 
 	fieldSchema := schemaAtPointer(compiled, cursorCtx.Pointer)
 	if fieldSchema != nil && fieldSchema.Enum != nil {
-		items := completionItemsForEnum(fieldSchema, schemaDetail(fieldSchema))
+		items := completionItemsForEnum(fieldSchema, schemaDetail(fieldSchema), wordRange)
 		if items == nil {
 			items = []lsp.CompletionItem{}
 		}

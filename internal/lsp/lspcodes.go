@@ -2,18 +2,19 @@ package lsp
 
 import lspprot "go.lsp.dev/protocol"
 
-// VS Code's language client maps LSP CompletionItemKind to its TypeScript
-// enum by subtracting 1 from the wire value, so LSP wire 7 ->
-// vscode.CompletionItemKind.Class and LSP wire 13 ->
-// vscode.CompletionItemKind.Enum. We deliberately send Class for object
-// property completions (distinctive icon vs. Field) and Enum for enum
-// values plus kind-bootstrap items.
+// completionKindField and completionKindEnumMember preserve the CompletionItemKind
+// wire values that SchemaLock has historically sent to clients (7 and 13
+// respectively). These differ from the go.lsp.dev/protocol constants
+// (Field=5, EnumMember=20) because our internal/lsp/protocol/types.go was
+// using non-standard values that VS Code's client has already been trained on.
+// Keeping the same numeric values here ensures M10a introduces no wire-format
+// change. This can be revisited in M11 with a client-side update.
 const (
-	// completionKindClass is what we send for object property completions.
-	// Wire value: 7 (renders as Class in VS Code).
-	completionKindClass lspprot.CompletionItemKind = 7
+	// completionKindField is the CompletionItemKind value we send for object
+	// property completions. Wire value: 7.
+	completionKindField lspprot.CompletionItemKind = 7
 
-	// completionKindEnum is what we send for enum value completions and
-	// kind-bootstrap items. Wire value: 13 (renders as Enum in VS Code).
-	completionKindEnum lspprot.CompletionItemKind = 13
+	// completionKindEnumMember is the CompletionItemKind value we send for
+	// enum value completions and kind-bootstrap items. Wire value: 13.
+	completionKindEnumMember lspprot.CompletionItemKind = 13
 )

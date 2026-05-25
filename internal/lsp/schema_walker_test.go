@@ -49,7 +49,7 @@ func TestCompletionItemsForProperties_RequiredFirst(t *testing.T) {
 	}`
 	sch := buildSchema(t, raw)
 
-	items := completionItemsForProperties(sch, nil)
+	items := completionItemsForProperties(sch, nil, lspprot.Range{})
 	if len(items) != 4 {
 		t.Fatalf("expected 4 items, got %d", len(items))
 	}
@@ -83,7 +83,7 @@ func TestCompletionItemsForProperties_AllOptional(t *testing.T) {
 	}`
 	sch := buildSchema(t, raw)
 
-	items := completionItemsForProperties(sch, nil)
+	items := completionItemsForProperties(sch, nil, lspprot.Range{})
 	if len(items) != 3 {
 		t.Fatalf("expected 3 items, got %d", len(items))
 	}
@@ -108,7 +108,7 @@ func TestCompletionItemsForEnum_DeclarationOrder(t *testing.T) {
 	}`
 	sch := buildSchema(t, raw)
 
-	items := completionItemsForEnum(sch, "string")
+	items := completionItemsForEnum(sch, "string", lspprot.Range{})
 	if len(items) != 3 {
 		t.Fatalf("expected 3 items, got %d", len(items))
 	}
@@ -139,7 +139,7 @@ func TestCompletionItemsForEnum_ReverseDeclarationOrder(t *testing.T) {
 	}`
 	sch := buildSchema(t, raw)
 
-	items := completionItemsForEnum(sch, "string")
+	items := completionItemsForEnum(sch, "string", lspprot.Range{})
 	if len(items) != 3 {
 		t.Fatalf("expected 3 items, got %d", len(items))
 	}
@@ -163,7 +163,7 @@ func TestCompletionItemsForEnum_Detail(t *testing.T) {
 	}`
 	sch := buildSchema(t, raw)
 
-	items := completionItemsForEnum(sch, "my-type")
+	items := completionItemsForEnum(sch, "my-type", lspprot.Range{})
 	for _, item := range items {
 		if item.Detail != "my-type" {
 			t.Errorf("item %q Detail = %q, want \"my-type\"", item.Label, item.Detail)
@@ -254,7 +254,7 @@ func TestCompletionItemsForProperties_Detail(t *testing.T) {
 	}`
 	sch := buildSchema(t, raw)
 
-	items := completionItemsForProperties(sch, nil)
+	items := completionItemsForProperties(sch, nil, lspprot.Range{})
 
 	// Build a label → item map for easy lookup.
 	byLabel := make(map[string]string, len(items))
@@ -307,7 +307,7 @@ func TestCompletionItemsForProperties_Documentation(t *testing.T) {
 		}
 	}`
 	sch := buildSchema(t, raw)
-	items := completionItemsForProperties(sch, nil)
+	items := completionItemsForProperties(sch, nil, lspprot.Range{})
 
 	byLabel := make(map[string]any, len(items))
 	for _, item := range items {
@@ -353,7 +353,7 @@ func TestCompletionItemsForProperties_Preselect(t *testing.T) {
 		}
 	}`
 	sch := buildSchema(t, raw)
-	items := completionItemsForProperties(sch, nil)
+	items := completionItemsForProperties(sch, nil, lspprot.Range{})
 
 	if len(items) != 4 {
 		t.Fatalf("expected 4 items, got %d", len(items))
@@ -392,7 +392,7 @@ func TestCompletionItemsForProperties_NoPreselect(t *testing.T) {
 		}
 	}`
 	sch := buildSchema(t, raw)
-	items := completionItemsForProperties(sch, nil)
+	items := completionItemsForProperties(sch, nil, lspprot.Range{})
 
 	for _, item := range items {
 		if item.Preselect {
@@ -414,7 +414,7 @@ func TestCompletionItemsForProperties_Deprecated(t *testing.T) {
 		}
 	}`
 	sch := buildSchema(t, raw)
-	items := completionItemsForProperties(sch, nil)
+	items := completionItemsForProperties(sch, nil, lspprot.Range{})
 
 	byLabel := make(map[string]lspprot.CompletionItem, len(items))
 	for _, item := range items {
@@ -658,6 +658,103 @@ func TestPositionAt_ClosingSiblings(t *testing.T) {
 						t.Errorf("ExistingKeys[%d] = %q, want %q", i, gotKeys[i], wantKeys[i])
 					}
 				}
+			}
+		})
+	}
+}
+
+// TestWordRangeAt covers all rows of the wordRangeAt behaviour spec from the
+// plan. Word characters are [A-Za-z0-9_-].
+func TestWordRangeAt(t *testing.T) {
+	tests := []struct {
+		name    string
+		text    string
+		line    uint32
+		char    uint32
+		wantSL  uint32 // want start line
+		wantSC  uint32 // want start char
+		wantEL  uint32 // want end line
+		wantEC  uint32 // want end char
+	}{
+		{
+			name:   "EmptyLine_char0",
+			text:   "",
+			line:   0, char: 0,
+			wantSL: 0, wantSC: 0, wantEL: 0, wantEC: 0,
+		},
+		{
+			name:   "WhitespaceAtStartOfIndentedLine",
+			text:   "apiVersion: x\n  replicas: 1\n",
+			line:   1, char: 0,
+			wantSL: 1, wantSC: 0, wantEL: 1, wantEC: 0,
+		},
+		{
+			name:   "InsideWord_replicas_char3",
+			text:   "apiVersion: x\n  replicas: 1\n",
+			line:   1, char: 5,
+			wantSL: 1, wantSC: 2, wantEL: 1, wantEC: 10,
+		},
+		{
+			name:   "EndOfWord_replicas",
+			text:   "apiVersion: x\n  replicas: 1\n",
+			line:   1, char: 10,
+			wantSL: 1, wantSC: 2, wantEL: 1, wantEC: 10,
+		},
+		{
+			name:   "StartOfWord_replicas",
+			text:   "apiVersion: x\n  replicas: 1\n",
+			line:   1, char: 2,
+			wantSL: 1, wantSC: 2, wantEL: 1, wantEC: 10,
+		},
+		{
+			name:   "AfterFieldColon_whitespace",
+			text:   "  replicas: ",
+			line:   0, char: 11,
+			wantSL: 0, wantSC: 11, wantEL: 0, wantEC: 11,
+		},
+		{
+			name:   "InsideEnumValue_disabled",
+			text:   "  mode: disabled",
+			line:   0, char: 10,
+			wantSL: 0, wantSC: 8, wantEL: 0, wantEC: 16,
+		},
+		{
+			name:   "PastPunctuation_colon",
+			text:   "spec:",
+			line:   0, char: 4,
+			wantSL: 0, wantSC: 0, wantEL: 0, wantEC: 4,
+		},
+		{
+			name:   "LineOutOfBounds",
+			text:   "line0\n",
+			line:   5, char: 0,
+			wantSL: 5, wantSC: 0, wantEL: 5, wantEC: 0,
+		},
+		{
+			name:   "CharPastLineLength",
+			text:   "abc",
+			line:   0, char: 100,
+			wantSL: 0, wantSC: 0, wantEL: 0, wantEC: 3,
+		},
+		{
+			name:   "WordWithUnderscoreAndDash",
+			text:   "  my_field-name: 1",
+			line:   0, char: 5,
+			wantSL: 0, wantSC: 2, wantEL: 0, wantEC: 15,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			pos := lspprot.Position{Line: tc.line, Character: tc.char}
+			got := wordRangeAt(tc.text, pos)
+			if got.Start.Line != tc.wantSL || got.Start.Character != tc.wantSC {
+				t.Errorf("Start = {%d,%d}, want {%d,%d}",
+					got.Start.Line, got.Start.Character, tc.wantSL, tc.wantSC)
+			}
+			if got.End.Line != tc.wantEL || got.End.Character != tc.wantEC {
+				t.Errorf("End = {%d,%d}, want {%d,%d}",
+					got.End.Line, got.End.Character, tc.wantEL, tc.wantEC)
 			}
 		})
 	}
