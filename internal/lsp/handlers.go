@@ -2,32 +2,104 @@ package lsp
 
 import (
 	"context"
+	"fmt"
 	"runtime"
+	"sort"
 	"strings"
 
 	"go.lsp.dev/jsonrpc2"
 	lsp "go.lsp.dev/protocol"
 
+	"github.com/schemalock/app/internal/intent"
 	"github.com/schemalock/app/internal/lsp/protocol"
 	"github.com/schemalock/app/internal/yamldoc"
 )
 
-// bootstrapKindCompletions is a placeholder for the kind-value completion
-// trigger that used to consult the lockfile-backed SchemaResolver's
-// KindsForGroup index. The intent-based resolver does not maintain a
-// global kind→group index; replacing this requires fetching manifest.json
-// for the intent-pinned version of the doc's group and listing its kinds.
+// bootstrapKindCompletions returns a sorted list of Kind completion items for
+// the value position of "kind:" in a YAML document whose apiVersion is set but
+// kind is empty.
 //
-// TODO(intent-bootstrap): reimplement against intent.Lookup + a per-pin
-// CDN manifest fetch. Until then, bootstrap completion returns nil and the
-// regular schema-driven completion path takes over.
+// Trigger predicate (all must be true):
+//   - doc.APIVersion is non-empty
+//   - doc.Kind is empty
+//   - cursorCtx.Pointer == "/kind"
+//   - cursorCtx.IsKeyPosition is false
+//   - cdn is non-nil
+//
+// Version-resolution order: intent pin for the document's directory first,
+// CDN versions()[0] as fallback. On any resolution or fetch failure the
+// function returns nil (silent skip); the caller falls through to the empty
+// sentinel branch in Completion.
 func bootstrapKindCompletions(
+	ctx context.Context,
 	doc yamldoc.Document,
 	cursorCtx cursorContext,
+	uri string,
+	intentLookup *intent.Lookup,
+	cdn *cdnResolver,
+	wordRange lsp.Range,
 ) []lsp.CompletionItem {
-	_ = doc
-	_ = cursorCtx
-	return nil
+	if doc.APIVersion == "" || doc.Kind != "" {
+		return nil
+	}
+	if cursorCtx.Pointer != "/kind" || cursorCtx.IsKeyPosition {
+		return nil
+	}
+	if cdn == nil {
+		return nil
+	}
+
+	group := groupFromAPIVersion(doc.APIVersion)
+	if group == "" {
+		return nil
+	}
+
+	// Resolve operator version: intent pin first, CDN latest as fallback.
+	version := ""
+	if intentLookup != nil {
+		v, ok, _ := intentLookup.PinFor(dirFromURI(uri), "kubernetes", group)
+		if ok && v != "" {
+			version = v
+		}
+	}
+	if version == "" {
+		versions, err := cdn.versions(ctx, "kubernetes", group)
+		if err != nil || len(versions) == 0 {
+			return nil
+		}
+		version = versions[0]
+	}
+
+	manifest, err := cdn.manifest(ctx, "kubernetes", group, version)
+	if err != nil {
+		return nil
+	}
+
+	kinds := make([]string, 0, len(manifest.Kinds))
+	for k := range manifest.Kinds {
+		kinds = append(kinds, k)
+	}
+	sort.Strings(kinds)
+
+	if len(kinds) == 0 {
+		return nil
+	}
+
+	items := make([]lsp.CompletionItem, 0, len(kinds))
+	for i, kind := range kinds {
+		items = append(items, lsp.CompletionItem{
+			Label:      kind,
+			Kind:       completionKindEnumMember,
+			Detail:     "Kind from " + group + " @ " + version,
+			FilterText: kind,
+			SortText:   fmt.Sprintf("%04d_%s", i, kind),
+			TextEdit: &lsp.TextEdit{
+				Range:   wordRange,
+				NewText: kind,
+			},
+		})
+	}
+	return items
 }
 
 // requeueAllOpenDocuments iterates over all open documents and re-submits

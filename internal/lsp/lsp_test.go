@@ -1046,28 +1046,31 @@ func TestCompletion_BlankLineNewSibling(t *testing.T) {
 		t.Errorf("blank-line sibling completion missing 'clusterVersion'; got: %v", labels)
 	}
 
-	// Verify insertText shape: scalar properties get "name: ", object/array
+	// Verify textEdit.newText shape: scalar properties get "name: ", object/array
 	// properties get the snippet form. Picking a completion must produce
 	// parseable YAML — the original bug was that bare-key insertions broke
 	// the YAML parser.
-	sawAnyInsertText := false
+	// Note: InsertText is no longer set; TextEdit.NewText carries the insert
+	// text (LSP §3.17: when textEdit is present, insertText is ignored).
+	sawAnyTextEdit := false
 	for _, it := range items {
 		m, ok := it.(map[string]any)
 		if !ok {
 			continue
 		}
 		lbl, _ := m["label"].(string)
-		ins, hasIns := m["insertText"].(string)
-		if !hasIns {
+		te, hasTe := m["textEdit"].(map[string]any)
+		if !hasTe {
 			continue
 		}
-		sawAnyInsertText = true
-		if !strings.HasPrefix(ins, lbl+":") {
-			t.Errorf("insertText for %q must start with %q:; got %q", lbl, lbl, ins)
+		newText, _ := te["newText"].(string)
+		sawAnyTextEdit = true
+		if !strings.HasPrefix(newText, lbl+":") {
+			t.Errorf("textEdit.newText for %q must start with %q:; got %q", lbl, lbl, newText)
 		}
 	}
-	if !sawAnyInsertText {
-		t.Error("no completion item had insertText; YAML would break on acceptance")
+	if !sawAnyTextEdit {
+		t.Error("no completion item had textEdit; YAML would break on acceptance")
 	}
 
 	s.send(t, makeShutdownReq(71))
@@ -1572,8 +1575,12 @@ func TestCompletion_IsIncompleteFalse_WhenItemsPresent(t *testing.T) {
 	if result["isIncomplete"] != false {
 		t.Errorf("isIncomplete = %v, want false (VS Code must filter locally as user types)", result["isIncomplete"])
 	}
-	// Each item must have filterText == label so client-side filtering matches
-	// the bare property name regardless of the snippet InsertText shape.
+	// Cursor at (line=5, char=2) is inside "retentionPeriod" which starts at
+	// char=2 and ends at char=17 (2 + len("retentionPeriod")).
+	// The TextEdit.Range must cover that full word so VS Code uses it as both
+	// the filter prefix derivation source and the replace target on accept.
+	const wantStartChar = uint32(2)
+	const wantEndChar = uint32(17) // 2 + len("retentionPeriod")
 	for _, it := range items {
 		m, ok := it.(map[string]any)
 		if !ok {
@@ -1581,6 +1588,32 @@ func TestCompletion_IsIncompleteFalse_WhenItemsPresent(t *testing.T) {
 		}
 		if m["filterText"] != m["label"] {
 			t.Errorf("filterText %v, want label %v", m["filterText"], m["label"])
+		}
+		// Each item must carry a textEdit with the word range.
+		te, ok := m["textEdit"].(map[string]any)
+		if !ok {
+			t.Errorf("item %v: textEdit missing or wrong type: %T", m["label"], m["textEdit"])
+			continue
+		}
+		rng, ok := te["range"].(map[string]any)
+		if !ok {
+			t.Errorf("item %v: textEdit.range missing: %v", m["label"], te["range"])
+			continue
+		}
+		start, _ := rng["start"].(map[string]any)
+		end, _ := rng["end"].(map[string]any)
+		// JSON numbers decode as float64.
+		if start["line"] != float64(5) || start["character"] != float64(wantStartChar) {
+			t.Errorf("item %v: textEdit.range.start = %v, want {line:5, character:%d}",
+				m["label"], start, wantStartChar)
+		}
+		if end["line"] != float64(5) || end["character"] != float64(wantEndChar) {
+			t.Errorf("item %v: textEdit.range.end = %v, want {line:5, character:%d}",
+				m["label"], end, wantEndChar)
+		}
+		// insertText must be absent (empty string) — TextEdit takes precedence.
+		if it, ok := m["insertText"]; ok && it != "" && it != nil {
+			t.Errorf("item %v: insertText = %v, want absent/empty", m["label"], it)
 		}
 	}
 
@@ -1630,7 +1663,8 @@ func TestCompletion_IsIncompleteFalse_EnumValues(t *testing.T) {
 	if result["isIncomplete"] != false {
 		t.Errorf("isIncomplete = %v, want false for enum completion", result["isIncomplete"])
 	}
-	// Each enum item must have filterText == label.
+	// Cursor at (line=5, char=18) is on the space after "retentionPeriod: ".
+	// The word range at whitespace is zero-width: start == end == {5, 18}.
 	for _, it := range items {
 		m, ok := it.(map[string]any)
 		if !ok {
@@ -1638,6 +1672,28 @@ func TestCompletion_IsIncompleteFalse_EnumValues(t *testing.T) {
 		}
 		if m["filterText"] != m["label"] {
 			t.Errorf("filterText %v, want label %v", m["filterText"], m["label"])
+		}
+		// Each enum item must carry a textEdit with zero-width range at cursor.
+		te, ok := m["textEdit"].(map[string]any)
+		if !ok {
+			t.Errorf("item %v: textEdit missing or wrong type: %T", m["label"], m["textEdit"])
+			continue
+		}
+		rng, ok := te["range"].(map[string]any)
+		if !ok {
+			t.Errorf("item %v: textEdit.range missing: %v", m["label"], te["range"])
+			continue
+		}
+		start, _ := rng["start"].(map[string]any)
+		end, _ := rng["end"].(map[string]any)
+		// Zero-width range: start == end == {5, 18}.
+		if start["line"] != float64(5) || start["character"] != float64(18) {
+			t.Errorf("item %v: textEdit.range.start = %v, want {line:5, character:18}",
+				m["label"], start)
+		}
+		if end["line"] != float64(5) || end["character"] != float64(18) {
+			t.Errorf("item %v: textEdit.range.end = %v, want {line:5, character:18}",
+				m["label"], end)
 		}
 	}
 
@@ -1709,12 +1765,6 @@ func TestCompletion_IsIncompleteFalse_WhenEmpty(t *testing.T) {
 // checks for VMCluster's label and kind==13 (EnumMember) without asserting
 // the exact list, keeping the test robust to seed-data changes.
 func TestCompletion_KindBootstrap(t *testing.T) {
-	// TODO(intent-bootstrap): bootstrap kind completion lost its global
-	// kind→pin index when the lockfile resolver was removed. The new
-	// intent.Lookup is per-directory and does not expose KindsForGroup.
-	// Re-introduce as a follow-up: fetch manifest.json for the intent-pinned
-	// version of the doc's group and list its kinds.
-	t.Skip("bootstrap kind completion needs reimplementation against intent.Lookup")
 	workspaceDir, err := filepath.Abs("testdata/workspace")
 	if err != nil {
 		t.Fatal(err)
@@ -1790,7 +1840,77 @@ func TestCompletion_KindBootstrap(t *testing.T) {
 		}
 	}
 
+	// textEdit.range must be zero-width at cursor (1,5) — cursor is exactly
+	// after "kind:" with no value yet, so wordRangeAt returns zero-width.
+	// textEdit.newText must equal the label.
+	for _, it := range items {
+		m, _ := it.(map[string]any)
+		te, ok := m["textEdit"].(map[string]any)
+		if !ok {
+			t.Errorf("item %q missing textEdit", m["label"])
+			continue
+		}
+		rng, _ := te["range"].(map[string]any)
+		start, _ := rng["start"].(map[string]any)
+		end, _ := rng["end"].(map[string]any)
+		if start["line"] != float64(1) || start["character"] != float64(5) ||
+			end["line"] != float64(1) || end["character"] != float64(5) {
+			t.Errorf("item %q textEdit.range = %v, want zero-width {1,5}", m["label"], rng)
+		}
+		if newText, _ := te["newText"].(string); newText != m["label"] {
+			t.Errorf("item %q textEdit.newText = %q, want label", m["label"], newText)
+		}
+	}
+
 	s.send(t, makeShutdownReq(131))
+	s.readFrame(t)
+	s.send(t, makeExitNotif())
+	s.waitDone(t, 3*time.Second)
+}
+
+// TestCompletion_KindBootstrap_CDNFallback verifies bootstrap kind
+// completion works when there is no schemalock.yaml in the hierarchy —
+// the resolver falls back to cdn.versions()[0] and fetches the manifest
+// from there.
+func TestCompletion_KindBootstrap_CDNFallback(t *testing.T) {
+	// An empty temp dir → no schemalock.yaml above it → PinFor returns
+	// ("", false, nil), forcing the CDN fallback path.
+	emptyDir := t.TempDir()
+
+	s := newSession(t, emptyDir)
+	defer s.close(t)
+
+	initSession(t, s, emptyDir)
+
+	bootstrapYAML := "apiVersion: operator.victoriametrics.com/v1beta1\nkind:\n"
+	docURI := "file://" + filepath.Join(emptyDir, "bootstrap_kind.yaml")
+	s.send(t, makeDidOpenReq(docURI, bootstrapYAML, 1))
+	_, _ = s.readFrameTimeout(t, 500*time.Millisecond)
+
+	s.send(t, makeCompletionReq(140, docURI, 1, 5))
+	resp := s.readFrame(t)
+
+	if resp["error"] != nil {
+		t.Fatalf("unexpected error: %v", resp["error"])
+	}
+	result, _ := resp["result"].(map[string]any)
+	items, _ := result["items"].([]any)
+	if len(items) == 0 {
+		t.Fatal("expected non-empty CDN-fallback bootstrap items, got 0")
+	}
+	found := false
+	for _, it := range items {
+		m, _ := it.(map[string]any)
+		if m["label"] == "VMCluster" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected VMCluster via CDN fallback; got items: %v", items)
+	}
+
+	s.send(t, makeShutdownReq(141))
 	s.readFrame(t)
 	s.send(t, makeExitNotif())
 	s.waitDone(t, 3*time.Second)
