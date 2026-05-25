@@ -355,7 +355,7 @@ func completionItemsForProperties(sch *jsonschema.Schema, existingKeys []string,
 		}
 		item := lsp.CompletionItem{
 			Label: name,
-			Kind:  completionKindField,
+			Kind:  completionKindClass,
 		}
 		if propSchema != nil {
 			// Wrap description in MarkupContent so editors render it as Markdown.
@@ -471,7 +471,7 @@ func completionItemsForEnum(sch *jsonschema.Schema, parentDetail string, wordRan
 		// TextEdit replaces the word at cursor (see completionItemsForProperties).
 		items = append(items, lsp.CompletionItem{
 			Label:      label,
-			Kind:       completionKindEnumMember,
+			Kind:       completionKindEnum,
 			SortText:   fmt.Sprintf("%04d_%s", i, label),
 			Detail:     parentDetail,
 			FilterText: label,
