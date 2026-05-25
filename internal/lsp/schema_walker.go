@@ -298,9 +298,44 @@ func unescapePointerSegment(s string) string {
 	return s
 }
 
+// wordRangeAt returns an lsp.Range covering the contiguous run of word
+// characters around pos.Character on pos.Line. A word character is
+// [A-Za-z0-9_-]. On a position not adjacent to a word character (whitespace,
+// punctuation, line edge), the returned range is zero-width at pos.
+//
+// pos uses 0-based LSP line/character coordinates (UTF-16 in the wire spec;
+// the project treats text as Go runes for the PoC, matching the existing
+// positionAt convention — keys are ASCII for K8s schemas).
+func wordRangeAt(text string, pos lsp.Position) lsp.Range {
+	lines := strings.Split(text, "\n")
+	if int(pos.Line) >= len(lines) {
+		return lsp.Range{Start: pos, End: pos}
+	}
+	line := lines[pos.Line]
+	col := min(int(pos.Character), len(line))
+	isWord := func(b byte) bool {
+		return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') ||
+			(b >= '0' && b <= '9') || b == '_' || b == '-'
+	}
+	start := col
+	for start > 0 && isWord(line[start-1]) {
+		start--
+	}
+	end := col
+	for end < len(line) && isWord(line[end]) {
+		end++
+	}
+	return lsp.Range{
+		Start: lsp.Position{Line: pos.Line, Character: uint32(start)},
+		End:   lsp.Position{Line: pos.Line, Character: uint32(end)},
+	}
+}
+
 // completionItemsForProperties builds completion items from a schema's
 // Properties map, excluding keys already present at the cursor position.
-func completionItemsForProperties(sch *jsonschema.Schema, existingKeys []string) []lsp.CompletionItem {
+// wordRange is attached to each item as a TextEdit so VS Code derives the
+// filter prefix and replace target from the word at cursor.
+func completionItemsForProperties(sch *jsonschema.Schema, existingKeys []string, wordRange lsp.Range) []lsp.CompletionItem {
 	if sch == nil || sch.Properties == nil {
 		return nil
 	}
@@ -320,7 +355,7 @@ func completionItemsForProperties(sch *jsonschema.Schema, existingKeys []string)
 		}
 		item := lsp.CompletionItem{
 			Label: name,
-			Kind:  completionKindField,
+			Kind:  completionKindClass,
 		}
 		if propSchema != nil {
 			// Wrap description in MarkupContent so editors render it as Markdown.
@@ -344,19 +379,20 @@ func completionItemsForProperties(sch *jsonschema.Schema, existingKeys []string)
 		}
 		// Detail shows the property type or enum summary.
 		item.Detail = schemaDetail(propSchema)
-		// Insert `name: ` so the YAML remains parseable after acceptance.
-		// For object/array properties, use a snippet that opens a nested
-		// block; VS Code auto-indents the second line to the cursor's
-		// current indent, and the literal two spaces add the child indent.
+		// TextEdit replaces the word at cursor with the property name so VS Code
+		// uses the word range as both the filter prefix and the replace target.
+		// InsertText is not set — when TextEdit is present it takes precedence
+		// (LSP §3.17 CompletionItem.textEdit) and keeping both invites drift.
+		// For object/array properties a snippet opens a nested block.
 		switch propertyShape(propSchema) {
 		case shapeObject, shapeArray:
-			item.InsertText = name + ":\n  $0"
+			item.TextEdit = &lsp.TextEdit{Range: wordRange, NewText: name + ":\n  $0"}
 			item.InsertTextFormat = lsp.InsertTextFormatSnippet
 		default:
-			item.InsertText = name + ": "
+			item.TextEdit = &lsp.TextEdit{Range: wordRange, NewText: name + ": "}
 		}
 		// FilterText ensures VS Code's client-side filter matches the bare
-		// property name regardless of the InsertText snippet shape.
+		// property name regardless of the TextEdit NewText snippet shape.
 		item.FilterText = name
 		items = append(items, item)
 	}
@@ -411,7 +447,8 @@ func propertyShape(sch *jsonschema.Schema) propShape {
 // completionItemsForEnum builds completion items from a schema's Enum values.
 // parentDetail is the Detail string of the parent field (e.g. "string") and is
 // forwarded to each item so the editor can display the owning type.
-func completionItemsForEnum(sch *jsonschema.Schema, parentDetail string) []lsp.CompletionItem {
+// wordRange is attached to each item as a TextEdit (see completionItemsForProperties).
+func completionItemsForEnum(sch *jsonschema.Schema, parentDetail string, wordRange lsp.Range) []lsp.CompletionItem {
 	if sch == nil || sch.Enum == nil {
 		return nil
 	}
@@ -431,12 +468,14 @@ func completionItemsForEnum(sch *jsonschema.Schema, parentDetail string) []lsp.C
 		// SortText preserves schema declaration order, which is meaningful for
 		// JSON Schema enums (first value is often the default/most common).
 		// FilterText ensures VS Code's client-side filter matches the label.
+		// TextEdit replaces the word at cursor (see completionItemsForProperties).
 		items = append(items, lsp.CompletionItem{
 			Label:      label,
-			Kind:       completionKindEnumMember,
+			Kind:       completionKindEnum,
 			SortText:   fmt.Sprintf("%04d_%s", i, label),
 			Detail:     parentDetail,
 			FilterText: label,
+			TextEdit:   &lsp.TextEdit{Range: wordRange, NewText: label},
 		})
 	}
 	// Declaration order is preserved via SortText; no secondary alphabetical
