@@ -54,10 +54,12 @@ type WorkerDeps struct {
 
 // WorkerPool manages a bounded set of goroutines that process validation jobs.
 // Jobs are submitted via [WorkerPool.Submit] and processed concurrently.
-// Call [WorkerPool.Stop] to drain in-flight work and shut down all goroutines.
+// Call [WorkerPool.Stop] to shut down all goroutines. Jobs that are buffered
+// but not yet started when Stop is called may be dropped; this is intentional
+// for an LSP server where pending diagnostics are irrelevant after shutdown.
 type WorkerPool struct {
 	jobs chan job
-	done chan struct{} // closed by Stop; Submit selects on this to avoid sending on a closed jobs channel
+	done chan struct{} // closed by Stop; Submit selects on this to drop new jobs without panicking
 	wg   sync.WaitGroup
 	deps WorkerDeps
 }
@@ -89,8 +91,9 @@ func (p *WorkerPool) Submit(j job) {
 	}
 }
 
-// Stop signals the pool as stopped and waits for all goroutines to finish.
-// After Stop returns, Submit calls are silently dropped.
+// Stop signals all workers to exit and waits for them to finish.
+// Any Submit calls that race with or follow Stop are silently dropped.
+// Buffered jobs that have not yet started processing may also be dropped.
 func (p *WorkerPool) Stop() {
 	close(p.done)
 	p.wg.Wait()
