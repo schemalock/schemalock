@@ -265,6 +265,8 @@ func (r *cdnResolver) Resolve(ctx context.Context, ecosystem, group, kind string
 
 	// Disk cache first.
 	cachePath, pathErr := safeCachePath(r.cacheDir, ecosystem, group, latest, kind)
+	// pathErr != nil means an unsafe segment was detected; disk cache is silently
+	// skipped so the schema is still served from the network.
 	if pathErr == nil {
 		if b, err := os.ReadFile(cachePath); err == nil {
 			// Disk cache trusted for unpinned schemas (verified at write time).
@@ -348,6 +350,8 @@ func (r *cdnResolver) ResolveAt(ctx context.Context, ecosystem, group, kind, ver
 		return CDNResolveResult{}, registry.ErrNotFound
 	}
 	cachePath, pathErr := safeCachePath(r.cacheDir, ecosystem, group, version, kind)
+	// pathErr != nil means an unsafe segment was detected; disk cache is silently
+	// skipped so the schema is still served from the network.
 	if pathErr == nil {
 		if b, err := os.ReadFile(cachePath); err == nil {
 			return CDNResolveResult{Version: version, Integrity: entry.Integrity, SchemaBytes: b, FromCache: true}, nil

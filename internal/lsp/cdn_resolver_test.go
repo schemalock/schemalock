@@ -208,6 +208,51 @@ func TestCDNResolver_Resolve(t *testing.T) {
 	}
 }
 
+// TestSafeCachePath verifies that safeCachePath rejects traversal segments and
+// accepts clean segments.
+func TestSafeCachePath(t *testing.T) {
+	dir := t.TempDir()
+
+	bad := []struct {
+		name                      string
+		eco, group, version, kind string
+	}{
+		{"dotdot version", "k8s", "op.io", "../..", "Kind"},
+		{"slash in kind", "k8s", "op.io", "1.0.0", "../../etc/passwd"},
+		{"backslash", "k8s", "op.io", "1.0.0", "Kind\\evil"},
+		{"null byte", "k8s", "op.io", "1.0\x00.0", "Kind"},
+		{"empty version", "k8s", "op.io", "", "Kind"},
+		{"dot-only", "k8s", "op.io", ".", "Kind"},
+	}
+	for _, tc := range bad {
+		t.Run("reject/"+tc.name, func(t *testing.T) {
+			_, err := safeCachePath(dir, tc.eco, tc.group, tc.version, tc.kind)
+			if err == nil {
+				t.Errorf("expected error for unsafe segment, got nil")
+			}
+		})
+	}
+
+	good := []struct {
+		name                      string
+		eco, group, version, kind string
+	}{
+		{"clean", "kubernetes", "operator.victoriametrics.com", "0.70.0", "VMCluster"},
+		{"unicode lookalike ok", "k8s", "op.io", "1.0.0", "Kind∕name"},
+	}
+	for _, tc := range good {
+		t.Run("accept/"+tc.name, func(t *testing.T) {
+			p, err := safeCachePath(dir, tc.eco, tc.group, tc.version, tc.kind)
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if p == "" {
+				t.Error("expected non-empty path")
+			}
+		})
+	}
+}
+
 // integrityOf returns "sha256-<base64-std(sha256(s))>" matching registry.ComputeIntegrity.
 func integrityOf(s string) string {
 	h := sha256.Sum256([]byte(s))
