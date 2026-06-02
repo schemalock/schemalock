@@ -83,33 +83,30 @@ func NewWorkerPool(size int, deps WorkerDeps) *WorkerPool {
 // Submit enqueues a validation job. Safe to call from any goroutine.
 // If the pool has been stopped, the job is silently discarded.
 func (p *WorkerPool) Submit(j job) {
-	// Check if done is closed (non-blocking).
-	select {
-	case <-p.done:
-		return
-	default:
-	}
-	// Try to send job; if jobs is closed, that means done was also closed.
 	select {
 	case p.jobs <- j:
 	case <-p.done:
 	}
 }
 
-// Stop signals the pool as stopped, drains workers, and waits for all
-// goroutines to finish. After Stop returns, Submit calls are silently dropped.
+// Stop signals the pool as stopped and waits for all goroutines to finish.
+// After Stop returns, Submit calls are silently dropped.
 func (p *WorkerPool) Stop() {
 	close(p.done)
-	close(p.jobs)
 	p.wg.Wait()
 }
 
-// run is the worker goroutine body. It pulls jobs from the channel until it
-// is closed.
+// run is the worker goroutine body. It pulls jobs from the channel until
+// p.done is closed.
 func (p *WorkerPool) run() {
 	defer p.wg.Done()
-	for j := range p.jobs {
-		p.process(j)
+	for {
+		select {
+		case j := <-p.jobs:
+			p.process(j)
+		case <-p.done:
+			return
+		}
 	}
 }
 
