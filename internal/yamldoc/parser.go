@@ -4,6 +4,7 @@
 package yamldoc
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -55,7 +56,9 @@ func (d *Document) Lookup(pointer string) (Position, error) {
 
 // Parse reads src as a YAML byte stream and returns one Document per
 // non-empty document. Documents are 0-indexed. If a document cannot be
-// parsed its error is wrapped with the document index.
+// parsed its error is wrapped with the document index. Per-document errors
+// are collected and returned via errors.Join; valid documents are still
+// returned even if some documents fail.
 func Parse(src []byte) ([]Document, error) {
 	// Parse the whole stream into an AST File so we can walk tokens for
 	// position information.
@@ -65,14 +68,16 @@ func Parse(src []byte) ([]Document, error) {
 	}
 
 	var docs []Document
+	var errs []error
 	for i, astDoc := range file.Docs {
 		doc, err := buildDocument(i, astDoc)
 		if err != nil {
-			return nil, fmt.Errorf("document %d: %w", i, err)
+			errs = append(errs, fmt.Errorf("document %d: %w", i, err))
+			continue
 		}
 		docs = append(docs, doc)
 	}
-	return docs, nil
+	return docs, errors.Join(errs...)
 }
 
 // buildDocument converts one ast.DocumentNode into a Document.

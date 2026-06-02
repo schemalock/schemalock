@@ -3,6 +3,7 @@ package yamldoc
 import (
 	"errors"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -227,5 +228,56 @@ func TestEscapePointerSegment(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("escapePointerSegment(%q) = %q, want %q", tt.in, got, tt.want)
 		}
+	}
+}
+
+// TestParse_MultiDocAllValid is a regression guard: a stream of valid documents
+// must all parse successfully after the continue-on-error refactor.
+func TestParse_MultiDocAllValid(t *testing.T) {
+	src := []byte("apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: good-one\n---\napiVersion: v1\nkind: Service\nmetadata:\n  name: good-two\n")
+
+	docs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(docs) != 2 {
+		t.Fatalf("expected 2 documents, got %d", len(docs))
+	}
+	if docs[0].Kind != "Deployment" {
+		t.Errorf("docs[0].Kind = %q, want Deployment", docs[0].Kind)
+	}
+	if docs[1].Kind != "Service" {
+		t.Errorf("docs[1].Kind = %q, want Service", docs[1].Kind)
+	}
+}
+
+// TestParse_ContinuesAfterBadDoc verifies that a scalar-root document (which
+// cannot unmarshal into map[string]any) does not abort parsing of surrounding
+// valid documents. Parse must return the valid docs AND a non-nil error.
+func TestParse_ContinuesAfterBadDoc(t *testing.T) {
+	// Doc 0 valid, doc 1 scalar root (triggers buildDocument error), doc 2 valid.
+	src := []byte("apiVersion: v1\nkind: Pod\n---\n42\n---\napiVersion: apps/v1\nkind: Deployment\n")
+
+	docs, err := Parse(src)
+	if err == nil {
+		t.Fatal("expected non-nil error for stream with bad document, got nil")
+	}
+	if len(docs) < 2 {
+		t.Errorf("expected at least 2 valid documents, got %d", len(docs))
+	}
+	// The error must mention "document 1".
+	if !strings.Contains(err.Error(), "document 1") {
+		t.Errorf("error should mention 'document 1': %v", err)
+	}
+	// The valid docs must have the right kinds.
+	kinds := make(map[string]bool)
+	for _, d := range docs {
+		kinds[d.Kind] = true
+	}
+	if !kinds["Pod"] {
+		t.Error("expected Pod in results")
+	}
+	if !kinds["Deployment"] {
+		t.Error("expected Deployment in results")
 	}
 }

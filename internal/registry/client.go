@@ -13,6 +13,9 @@ import (
 const (
 	defaultUserAgent = "schemalock/0.1 (+https://schemalock.dev)"
 	defaultTimeout   = 30 * time.Second
+	// MaxBodyBytes is the maximum number of bytes the client reads from any single
+	// HTTP response. Exported so tests can construct just-over-limit payloads.
+	MaxBodyBytes = 16 << 20 // 16 MiB
 )
 
 // Client fetches manifests and schemas from a SchemaLock-compatible CDN
@@ -120,9 +123,13 @@ func (c *Client) get(ctx context.Context, url string) ([]byte, error) {
 		return nil, fmt.Errorf("registry: GET %s: unexpected status %d", url, resp.StatusCode)
 	}
 
-	data, err := io.ReadAll(resp.Body)
+	lr := io.LimitReader(resp.Body, MaxBodyBytes+1)
+	data, err := io.ReadAll(lr)
 	if err != nil {
 		return nil, fmt.Errorf("registry: GET %s: reading body: %w", url, err)
+	}
+	if int64(len(data)) > MaxBodyBytes {
+		return nil, fmt.Errorf("registry: GET %s: response too large (> %d bytes)", url, MaxBodyBytes)
 	}
 	return data, nil
 }

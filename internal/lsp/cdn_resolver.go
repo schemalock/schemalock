@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/schemalock/app/internal/atomicfs"
 	"github.com/schemalock/app/internal/registry"
 	"golang.org/x/sync/singleflight"
 )
@@ -66,6 +68,31 @@ func newCDNResolver(client *registry.Client, posTTL, negTTL, errTTL time.Duratio
 		mCache: make(map[manifestKey]manifestEntry),
 		eCache: make(map[string]time.Time),
 	}
+}
+
+// safeCachePath builds the on-disk cache path for a schema, validating that
+// all segments are safe before joining. Returns ("", err) on unsafe input.
+func safeCachePath(cacheDir, ecosystem, group, version, kind string) (string, error) {
+	for label, seg := range map[string]string{
+		"ecosystem": ecosystem,
+		"group":     group,
+		"version":   version,
+		"kind":      kind,
+	} {
+		if !safePathSegment(seg) {
+			return "", fmt.Errorf("cdn: unsafe %s segment %q", label, seg)
+		}
+	}
+	return filepath.Join(cacheDir, ecosystem, group, version, kind+".json"), nil
+}
+
+// safePathSegment mirrors cache.safeSegment without creating a cross-package
+// dependency.
+func safePathSegment(s string) bool {
+	if s == "" || s == "." || s == ".." {
+		return false
+	}
+	return !strings.ContainsAny(s, "/\\\x00")
 }
 
 // versions returns the cached versions list for (ecosystem, group), fetching
@@ -238,10 +265,14 @@ func (r *cdnResolver) Resolve(ctx context.Context, ecosystem, group, kind string
 	}
 
 	// Disk cache first.
-	cachePath := filepath.Join(r.cacheDir, ecosystem, group, latest, kind+".json")
-	if b, err := os.ReadFile(cachePath); err == nil {
-		// Disk cache trusted for unpinned schemas (verified at write time).
-		return CDNResolveResult{Version: latest, Integrity: entry.Integrity, SchemaBytes: b, FromCache: true}, nil
+	cachePath, pathErr := safeCachePath(r.cacheDir, ecosystem, group, latest, kind)
+	// pathErr != nil means an unsafe segment was detected; disk cache is silently
+	// skipped so the schema is still served from the network.
+	if pathErr == nil {
+		if b, err := os.ReadFile(cachePath); err == nil {
+			// Disk cache trusted for unpinned schemas (verified at write time).
+			return CDNResolveResult{Version: latest, Integrity: entry.Integrity, SchemaBytes: b, FromCache: true}, nil
+		}
 	}
 
 	// Fetch from CDN.
@@ -257,8 +288,8 @@ func (r *cdnResolver) Resolve(ctx context.Context, ecosystem, group, kind string
 			ecosystem, group, latest, kind, wantIntegrity, gotIntegrity)
 	}
 	// Write to disk cache.
-	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err == nil {
-		_ = os.WriteFile(cachePath, body, 0o644)
+	if pathErr == nil {
+		_ = atomicfs.AtomicWrite(cachePath, body)
 	}
 	return CDNResolveResult{Version: latest, Integrity: wantIntegrity, SchemaBytes: body}, nil
 }
@@ -317,9 +348,13 @@ func (r *cdnResolver) ResolveAt(ctx context.Context, ecosystem, group, kind, ver
 	if !ok {
 		return CDNResolveResult{}, registry.ErrNotFound
 	}
-	cachePath := filepath.Join(r.cacheDir, ecosystem, group, version, kind+".json")
-	if b, err := os.ReadFile(cachePath); err == nil {
-		return CDNResolveResult{Version: version, Integrity: entry.Integrity, SchemaBytes: b, FromCache: true}, nil
+	cachePath, pathErr := safeCachePath(r.cacheDir, ecosystem, group, version, kind)
+	// pathErr != nil means an unsafe segment was detected; disk cache is silently
+	// skipped so the schema is still served from the network.
+	if pathErr == nil {
+		if b, err := os.ReadFile(cachePath); err == nil {
+			return CDNResolveResult{Version: version, Integrity: entry.Integrity, SchemaBytes: b, FromCache: true}, nil
+		}
 	}
 	body, err := r.client.FetchSchema(ctx, ecosystem, group, version, kind)
 	if err != nil {
@@ -328,8 +363,8 @@ func (r *cdnResolver) ResolveAt(ctx context.Context, ecosystem, group, kind, ver
 	if got := registry.ComputeIntegrity(body); got != entry.Integrity {
 		return CDNResolveResult{}, fmt.Errorf("cdn: integrity mismatch for %s/%s/%s/%s.json", ecosystem, group, version, kind)
 	}
-	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err == nil {
-		_ = os.WriteFile(cachePath, body, 0o644)
+	if pathErr == nil {
+		_ = atomicfs.AtomicWrite(cachePath, body)
 	}
 	return CDNResolveResult{Version: version, Integrity: entry.Integrity, SchemaBytes: body}, nil
 }

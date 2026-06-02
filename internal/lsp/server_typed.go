@@ -139,7 +139,7 @@ func (s *Server) initialize(ctx context.Context, params *lsp.InitializeParams) (
 	s.cdnResolver = cdn
 	s.overrides = ov
 	s.fallback = fallbackEnabled
-	s.strict = strictEnabled
+	s.strict.Store(strictEnabled)
 	s.log.Printf("initialize: strict mode = %v", strictEnabled)
 
 	// Build the InitializeResult. TextDocumentSync must be the integer form

@@ -6,6 +6,7 @@ import (
 	"log"
 	"runtime"
 	"sync"
+	"sync/atomic"
 
 	"go.lsp.dev/jsonrpc2"
 	lspprot "go.lsp.dev/protocol"
@@ -96,7 +97,7 @@ type Server struct {
 	// initializationOptions. Set during initialize from the "strict" key;
 	// absent or wrong-type → true (default ON). Read via a StrictFn closure
 	// by the worker pool.
-	strict bool
+	strict atomic.Bool
 
 	// notifyClient sends a server-push notification to the LSP client. It is
 	// set in Run once the jsonrpc2 connection is established. Nil in tests that
@@ -190,7 +191,7 @@ func (s *Server) Run(ctx context.Context, rwc io.ReadWriteCloser) error {
 		},
 		// StrictFn reads s.strict at job time (always post-initialize). The
 		// closure pattern keeps future didChangeConfiguration support race-free.
-		StrictFn: func() bool { return s.strict },
+		StrictFn: func() bool { return s.strict.Load() },
 	})
 
 	defer func() {

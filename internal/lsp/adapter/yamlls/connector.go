@@ -60,6 +60,7 @@ type Config struct {
 type Connector struct {
 	cfg              Config
 	cmd              *exec.Cmd // subprocess handle; nil when inactive or no subprocess
+	drain            io.Reader // subprocess stdout pipe; drained after conn.Close to prevent pipe-full deadlock
 	logger           *log.Logger
 	schemaProvider   SchemaProvider    // set via SetSchemaProvider; may be nil
 	ownershipChecker func(string) bool // set via SetOwnershipChecker; may be nil
@@ -129,7 +130,9 @@ func NewConnector(ctx context.Context, cfg Config) *Connector {
 	}()
 
 	rwc := readWriteCloseSubprocess{stdout: stdoutPipe, stdin: stdinPipe}
-	return newConnectorWired(ctx, rwc, cmd, cfg, lg)
+	c := newConnectorWired(ctx, rwc, cmd, cfg, lg)
+	c.drain = stdoutPipe
+	return c
 }
 
 // NewConnectorFromRWC builds a Connector over an already-open ReadWriteCloser
@@ -249,6 +252,14 @@ func (c *Connector) Shutdown(ctx context.Context) error {
 
 	// 3. Close the connection.
 	_ = conn.Close()
+
+	// Drain subprocess stdout so it can exit cleanly. After conn.Close() the
+	// jsonrpc2 read loop has stopped; if yaml-ls has buffered output it would
+	// stall writing to a full pipe and block cmd.Wait(). The goroutine exits
+	// when the pipe reaches EOF after the subprocess exits.
+	if c.drain != nil {
+		go func() { _, _ = io.Copy(io.Discard, c.drain) }()
+	}
 
 	cmd := c.cmd
 	if cmd == nil || cmd.Process == nil {

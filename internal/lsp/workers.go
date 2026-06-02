@@ -54,9 +54,12 @@ type WorkerDeps struct {
 
 // WorkerPool manages a bounded set of goroutines that process validation jobs.
 // Jobs are submitted via [WorkerPool.Submit] and processed concurrently.
-// Call [WorkerPool.Stop] to drain in-flight work and shut down all goroutines.
+// Call [WorkerPool.Stop] to shut down all goroutines. Jobs that are buffered
+// but not yet started when Stop is called may be dropped; this is intentional
+// for an LSP server where pending diagnostics are irrelevant after shutdown.
 type WorkerPool struct {
 	jobs chan job
+	done chan struct{} // closed by Stop; Submit selects on this to drop new jobs without panicking
 	wg   sync.WaitGroup
 	deps WorkerDeps
 }
@@ -69,6 +72,7 @@ func NewWorkerPool(size int, deps WorkerDeps) *WorkerPool {
 	}
 	p := &WorkerPool{
 		jobs: make(chan job, size*4), // small buffer so Submit rarely blocks
+		done: make(chan struct{}),
 		deps: deps,
 	}
 	for i := 0; i < size; i++ {
@@ -78,26 +82,34 @@ func NewWorkerPool(size int, deps WorkerDeps) *WorkerPool {
 	return p
 }
 
-// Submit enqueues a validation job. It is safe to call Submit from any
-// goroutine. If the pool has been stopped, Submit panics (callers must not
-// submit after Stop).
+// Submit enqueues a validation job. Safe to call from any goroutine.
+// If the pool has been stopped, the job is silently discarded.
 func (p *WorkerPool) Submit(j job) {
-	p.jobs <- j
+	select {
+	case p.jobs <- j:
+	case <-p.done:
+	}
 }
 
-// Stop closes the job channel and waits for all workers to finish their
-// current jobs. After Stop returns, no more jobs will be processed.
+// Stop signals all workers to exit and waits for them to finish.
+// Any Submit calls that race with or follow Stop are silently dropped.
+// Buffered jobs that have not yet started processing may also be dropped.
 func (p *WorkerPool) Stop() {
-	close(p.jobs)
+	close(p.done)
 	p.wg.Wait()
 }
 
-// run is the worker goroutine body. It pulls jobs from the channel until it
-// is closed.
+// run is the worker goroutine body. It pulls jobs from the channel until
+// p.done is closed.
 func (p *WorkerPool) run() {
 	defer p.wg.Done()
-	for j := range p.jobs {
-		p.process(j)
+	for {
+		select {
+		case j := <-p.jobs:
+			p.process(j)
+		case <-p.done:
+			return
+		}
 	}
 }
 
@@ -119,9 +131,9 @@ func (p *WorkerPool) process(j job) {
 		return
 	}
 
-	docs, err := yamldoc.Parse([]byte(j.text))
-	if err != nil {
-		// If we can't parse the document at all, emit a diagnostic at line 1.
+	docs, parseErr := yamldoc.Parse([]byte(j.text))
+	if parseErr != nil && len(docs) == 0 {
+		// Complete parse failure: no usable documents. Emit a parse error diagnostic.
 		p.deps.Publish(j.ctx, j.uri, j.version, []lsp.Diagnostic{{
 			Range: lsp.Range{
 				Start: lsp.Position{Line: 0, Character: 0},
@@ -129,10 +141,12 @@ func (p *WorkerPool) process(j job) {
 			},
 			Severity: lsp.DiagnosticSeverityError,
 			Source:   "schemalock",
-			Message:  fmt.Sprintf("YAML parse error: %s", err),
+			Message:  fmt.Sprintf("YAML parse error: %s", parseErr),
 		}})
 		return
 	}
+	// Partial parse errors (some docs failed) are intentionally ignored here;
+	// valid documents are validated below.
 
 	var allDiags []lsp.Diagnostic
 

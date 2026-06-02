@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/schemalock/app/internal/atomicfs"
 	"github.com/schemalock/app/internal/registry"
@@ -55,13 +56,34 @@ func DefaultRoot() (string, error) {
 func (c *Cache) Root() string { return c.root }
 
 // SchemaPath returns the on-disk path for an (ecosystem, group, version, kind)
-// tuple. The layout is byte-identical to the CDN URL path:
+// tuple. Returns an error if any segment is unsafe (contains "..", path
+// separators, or null bytes). The layout is byte-identical to the CDN URL:
 //
 //	<root>/<ecosystem>/<group>/<version>/<Kind>.json
 //
 // This is a pure function; it performs no I/O.
-func (c *Cache) SchemaPath(ecosystem, group, version, kind string) string {
-	return filepath.Join(c.root, ecosystem, group, version, kind+".json")
+func (c *Cache) SchemaPath(ecosystem, group, version, kind string) (string, error) {
+	for label, seg := range map[string]string{
+		"ecosystem": ecosystem,
+		"group":     group,
+		"version":   version,
+		"kind":      kind,
+	} {
+		if !safeSegment(seg) {
+			return "", fmt.Errorf("cache: unsafe %s segment %q", label, seg)
+		}
+	}
+	return filepath.Join(c.root, ecosystem, group, version, kind+".json"), nil
+}
+
+// safeSegment reports whether s is safe to use as a single filesystem path
+// segment. It rejects empty strings, ".", "..", and strings containing path
+// separators or null bytes.
+func safeSegment(s string) bool {
+	if s == "" || s == "." || s == ".." {
+		return false
+	}
+	return !strings.ContainsAny(s, "/\\\x00")
 }
 
 // ReadSchema returns the cached schema bytes for the given tuple.
@@ -71,7 +93,10 @@ func (c *Cache) SchemaPath(ecosystem, group, version, kind string) string {
 // Integrity is not re-verified on read; the filesystem is authoritative after
 // a successful [Cache.WriteSchema].
 func (c *Cache) ReadSchema(ecosystem, group, version, kind string) ([]byte, error) {
-	path := c.SchemaPath(ecosystem, group, version, kind)
+	path, err := c.SchemaPath(ecosystem, group, version, kind)
+	if err != nil {
+		return nil, err
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -98,7 +123,10 @@ func (c *Cache) WriteSchema(ecosystem, group, version, kind, integrity string, b
 	if err := registry.VerifyIntegrity(body, integrity); err != nil {
 		return fmt.Errorf("cache: write %s/%s/%s/%s: %w", ecosystem, group, version, kind, err)
 	}
-	path := c.SchemaPath(ecosystem, group, version, kind)
+	path, err := c.SchemaPath(ecosystem, group, version, kind)
+	if err != nil {
+		return fmt.Errorf("cache: write %s/%s/%s/%s: %w", ecosystem, group, version, kind, err)
+	}
 	if err := atomicfs.AtomicWrite(path, body); err != nil {
 		return fmt.Errorf("cache: write %s/%s/%s/%s: %w", ecosystem, group, version, kind, err)
 	}
