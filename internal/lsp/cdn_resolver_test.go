@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"sync/atomic"
 	"testing"
@@ -250,6 +251,57 @@ func TestSafeCachePath(t *testing.T) {
 				t.Error("expected non-empty path")
 			}
 		})
+	}
+}
+
+func TestCDNResolver_AtomicWrite(t *testing.T) {
+	schemaBody := `{"type":"object","title":"AtomicWriteTest"}`
+	h := sha256.Sum256([]byte(schemaBody))
+	integrity := "sha256-" + base64.StdEncoding.EncodeToString(h[:])
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/kubernetes/op.io/versions.json":
+			_, _ = w.Write([]byte(`["1.0.0"]`))
+		case "/kubernetes/op.io/1.0.0/manifest.json":
+			body := `{"version":1,"kinds":{"Kind":{"integrity":"` + integrity + `","size":` + strconv.Itoa(len(schemaBody)) + `}}}`
+			_, _ = w.Write([]byte(body))
+		case "/kubernetes/op.io/1.0.0/Kind.json":
+			_, _ = w.Write([]byte(schemaBody))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	cacheDir := t.TempDir()
+	rc := newCDNResolver(registry.NewClient(srv.URL), 5*time.Minute, 24*time.Hour, 30*time.Second)
+	rc.cacheDir = cacheDir
+
+	result, err := rc.Resolve(context.Background(), "kubernetes", "op.io", "Kind")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if string(result.SchemaBytes) != schemaBody {
+		t.Errorf("schema bytes mismatch")
+	}
+
+	// Second call must be a cache hit (FromCache=true) with complete bytes.
+	result2, err := rc.Resolve(context.Background(), "kubernetes", "op.io", "Kind")
+	if err != nil {
+		t.Fatalf("Resolve (cached): %v", err)
+	}
+	if !result2.FromCache {
+		t.Error("second Resolve should be a cache hit")
+	}
+	if string(result2.SchemaBytes) != schemaBody {
+		t.Errorf("cached schema bytes mismatch")
+	}
+
+	// No temp file debris.
+	matches, _ := filepath.Glob(filepath.Join(cacheDir, "*", "*", "*", ".schemalock-tmp-*"))
+	if len(matches) > 0 {
+		t.Errorf("temp debris found: %v", matches)
 	}
 }
 

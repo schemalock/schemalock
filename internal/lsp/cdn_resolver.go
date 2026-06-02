@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/schemalock/app/internal/atomicfs"
 	"github.com/schemalock/app/internal/registry"
 	"golang.org/x/sync/singleflight"
 )
@@ -288,9 +289,7 @@ func (r *cdnResolver) Resolve(ctx context.Context, ecosystem, group, kind string
 	}
 	// Write to disk cache.
 	if pathErr == nil {
-		if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err == nil {
-			_ = os.WriteFile(cachePath, body, 0o644)
-		}
+		_ = atomicfs.AtomicWrite(cachePath, body)
 	}
 	return CDNResolveResult{Version: latest, Integrity: wantIntegrity, SchemaBytes: body}, nil
 }
@@ -365,9 +364,7 @@ func (r *cdnResolver) ResolveAt(ctx context.Context, ecosystem, group, kind, ver
 		return CDNResolveResult{}, fmt.Errorf("cdn: integrity mismatch for %s/%s/%s/%s.json", ecosystem, group, version, kind)
 	}
 	if pathErr == nil {
-		if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err == nil {
-			_ = os.WriteFile(cachePath, body, 0o644)
-		}
+		_ = atomicfs.AtomicWrite(cachePath, body)
 	}
 	return CDNResolveResult{Version: version, Integrity: entry.Integrity, SchemaBytes: body}, nil
 }
