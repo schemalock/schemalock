@@ -226,6 +226,34 @@ func TestRouter_InvalidateAll(t *testing.T) {
 	}
 }
 
+// TestRouter_ConcurrentResolve verifies that concurrent Resolve calls for the
+// same cold-cache URI produce consistent results (no data race, no panic).
+func TestRouter_ConcurrentResolve(t *testing.T) {
+	dir, chain := setupRouterFixture(t)
+	r := NewRouter(chain)
+	uri := ownedURIInDir(dir, "concurrent.yaml")
+
+	const goroutines = 30
+	results := make([]ResolveResult, goroutines)
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := range goroutines {
+		go func(idx int) {
+			defer wg.Done()
+			results[idx] = r.Resolve(context.Background(), uri, vmClusterDoc)
+		}(i)
+	}
+	wg.Wait()
+
+	// All results must be the same state.
+	want := results[0].State
+	for i, res := range results {
+		if res.State != want {
+			t.Errorf("result[%d].State = %v, want %v", i, res.State, want)
+		}
+	}
+}
+
 // TestRouter_Concurrent runs IsOwned and Invalidate concurrently on the same
 // URI to verify race-freedom under -race.
 func TestRouter_Concurrent(t *testing.T) {

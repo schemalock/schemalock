@@ -3,6 +3,8 @@ package lsp
 import (
 	"context"
 	"sync"
+
+	"golang.org/x/sync/singleflight"
 )
 
 // Router decides per-URI resolution by delegating to a resolverChain. It
@@ -12,9 +14,10 @@ import (
 //
 // Router is safe for concurrent use.
 type Router struct {
-	chain *resolverChain
-	mu    sync.Mutex
-	cache map[string]ResolveResult
+	chain  *resolverChain
+	mu     sync.Mutex
+	cache  map[string]ResolveResult
+	flight singleflight.Group
 }
 
 // NewRouter returns a Router backed by the given resolver chain. chain may be
@@ -36,12 +39,14 @@ func (r *Router) Resolve(ctx context.Context, uri, text string) ResolveResult {
 	}
 	r.mu.Unlock()
 
-	got := r.chain.Resolve(ctx, uri, text)
-
-	r.mu.Lock()
-	r.cache[uri] = got
-	r.mu.Unlock()
-	return got
+	v, _, _ := r.flight.Do(uri, func() (any, error) {
+		got := r.chain.Resolve(ctx, uri, text)
+		r.mu.Lock()
+		r.cache[uri] = got
+		r.mu.Unlock()
+		return got, nil
+	})
+	return v.(ResolveResult)
 }
 
 // IsOwned reports whether schemalock claims this URI for direct serving.
