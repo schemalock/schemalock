@@ -57,6 +57,7 @@ type WorkerDeps struct {
 // Call [WorkerPool.Stop] to drain in-flight work and shut down all goroutines.
 type WorkerPool struct {
 	jobs chan job
+	done chan struct{} // closed by Stop; Submit selects on this to avoid sending on a closed jobs channel
 	wg   sync.WaitGroup
 	deps WorkerDeps
 }
@@ -69,6 +70,7 @@ func NewWorkerPool(size int, deps WorkerDeps) *WorkerPool {
 	}
 	p := &WorkerPool{
 		jobs: make(chan job, size*4), // small buffer so Submit rarely blocks
+		done: make(chan struct{}),
 		deps: deps,
 	}
 	for i := 0; i < size; i++ {
@@ -78,16 +80,26 @@ func NewWorkerPool(size int, deps WorkerDeps) *WorkerPool {
 	return p
 }
 
-// Submit enqueues a validation job. It is safe to call Submit from any
-// goroutine. If the pool has been stopped, Submit panics (callers must not
-// submit after Stop).
+// Submit enqueues a validation job. Safe to call from any goroutine.
+// If the pool has been stopped, the job is silently discarded.
 func (p *WorkerPool) Submit(j job) {
-	p.jobs <- j
+	// Check if done is closed (non-blocking).
+	select {
+	case <-p.done:
+		return
+	default:
+	}
+	// Try to send job; if jobs is closed, that means done was also closed.
+	select {
+	case p.jobs <- j:
+	case <-p.done:
+	}
 }
 
-// Stop closes the job channel and waits for all workers to finish their
-// current jobs. After Stop returns, no more jobs will be processed.
+// Stop signals the pool as stopped, drains workers, and waits for all
+// goroutines to finish. After Stop returns, Submit calls are silently dropped.
 func (p *WorkerPool) Stop() {
+	close(p.done)
 	close(p.jobs)
 	p.wg.Wait()
 }
