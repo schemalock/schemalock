@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/schemalock/app/internal/registry"
@@ -273,5 +274,25 @@ func TestVerifyIntegrity(t *testing.T) {
 				t.Errorf("errors.Is(err, %v) = false; err = %v", tt.wantIs, err)
 			}
 		})
+	}
+}
+
+// TestGet_ResponseTooLarge verifies that a response exceeding MaxBodyBytes
+// is rejected with an error rather than read into memory unbounded.
+func TestGet_ResponseTooLarge(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		buf := make([]byte, registry.MaxBodyBytes+1)
+		_, _ = w.Write(buf)
+	}))
+	t.Cleanup(srv.Close)
+
+	c := registry.NewClient(srv.URL)
+	_, err := c.FetchSchema(context.Background(), "k8s", "op", "1.0", "Kind")
+	if err == nil {
+		t.Fatal("expected error for oversized response, got nil")
+	}
+	if !strings.Contains(err.Error(), "too large") {
+		t.Errorf("error should mention 'too large': %v", err)
 	}
 }
