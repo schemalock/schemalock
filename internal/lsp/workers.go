@@ -119,9 +119,9 @@ func (p *WorkerPool) process(j job) {
 		return
 	}
 
-	docs, err := yamldoc.Parse([]byte(j.text))
-	if err != nil {
-		// If we can't parse the document at all, emit a diagnostic at line 1.
+	docs, parseErr := yamldoc.Parse([]byte(j.text))
+	if parseErr != nil && len(docs) == 0 {
+		// Complete parse failure: no usable documents. Emit a parse error diagnostic.
 		p.deps.Publish(j.ctx, j.uri, j.version, []lsp.Diagnostic{{
 			Range: lsp.Range{
 				Start: lsp.Position{Line: 0, Character: 0},
@@ -129,10 +129,12 @@ func (p *WorkerPool) process(j job) {
 			},
 			Severity: lsp.DiagnosticSeverityError,
 			Source:   "schemalock",
-			Message:  fmt.Sprintf("YAML parse error: %s", err),
+			Message:  fmt.Sprintf("YAML parse error: %s", parseErr),
 		}})
 		return
 	}
+	// Partial parse errors (some docs failed) are intentionally ignored here;
+	// valid documents are validated below.
 
 	var allDiags []lsp.Diagnostic
 
