@@ -70,7 +70,10 @@ func TestMismatchNoFile(t *testing.T) {
 	}
 
 	// The cache file must not exist.
-	path := c.SchemaPath(testArgs.eco, testArgs.group, testArgs.version, testArgs.kind)
+	path, err := c.SchemaPath(testArgs.eco, testArgs.group, testArgs.version, testArgs.kind)
+	if err != nil {
+		t.Fatalf("SchemaPath: %v", err)
+	}
 	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
 		t.Errorf("expected file to not exist after integrity mismatch, but os.Stat returned: %v", statErr)
 	}
@@ -145,11 +148,58 @@ func TestLayoutMatchesCDN(t *testing.T) {
 	root := t.TempDir()
 	c := cache.New(root)
 
-	got := c.SchemaPath("kubernetes", "operator.victoriametrics.com", "0.70.0", "VMCluster")
+	got, err := c.SchemaPath("kubernetes", "operator.victoriametrics.com", "0.70.0", "VMCluster")
+	if err != nil {
+		t.Fatalf("SchemaPath: %v", err)
+	}
 	want := filepath.Join(root, "kubernetes", "operator.victoriametrics.com", "0.70.0", "VMCluster.json")
 
 	if got != want {
 		t.Errorf("SchemaPath mismatch:\n got  %q\n want %q", got, want)
+	}
+}
+
+func TestSchemaPath_TraversalRejected(t *testing.T) {
+	root := t.TempDir()
+	c := cache.New(root)
+
+	cases := []struct {
+		name                      string
+		eco, group, version, kind string
+	}{
+		{"dotdot version", "k8s", "op.io", "../..", "Kind"},
+		{"dotdot kind", "k8s", "op.io", "1.0.0", "../../etc/passwd"},
+		{"slash in group", "k8s", "op/io", "1.0.0", "Kind"},
+		{"null byte", "k8s", "op.io", "1.0\x00.0", "Kind"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := c.SchemaPath(tc.eco, tc.group, tc.version, tc.kind)
+			if err == nil {
+				t.Error("expected error for unsafe segment, got nil")
+			}
+		})
+	}
+}
+
+func TestReadSchema_TraversalRejected(t *testing.T) {
+	root := t.TempDir()
+	c := cache.New(root)
+
+	_, err := c.ReadSchema("k8s", "op.io", "../../etc", "passwd")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestWriteSchema_TraversalRejected(t *testing.T) {
+	root := t.TempDir()
+	c := cache.New(root)
+
+	body := []byte(`{}`)
+	err := c.WriteSchema("k8s", "op.io", "../../etc", "passwd", computeIntegrity(body), body)
+	if err == nil {
+		t.Fatal("expected error, got nil")
 	}
 }
 
