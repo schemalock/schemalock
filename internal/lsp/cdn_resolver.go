@@ -269,10 +269,10 @@ func (r *cdnResolver) Resolve(ctx context.Context, ecosystem, group, kind string
 	// pathErr != nil means an unsafe segment was detected; disk cache is silently
 	// skipped so the schema is still served from the network.
 	if pathErr == nil {
-		if b, err := os.ReadFile(cachePath); err == nil {
-			// Disk cache trusted for unpinned schemas (verified at write time).
+		if b, err := os.ReadFile(cachePath); err == nil && registry.ComputeIntegrity(b) == entry.Integrity {
 			return CDNResolveResult{Version: latest, Integrity: entry.Integrity, SchemaBytes: b, FromCache: true}, nil
 		}
+		// Cache miss or stale: fall through to CDN fetch.
 	}
 
 	// Fetch from CDN.
@@ -352,9 +352,10 @@ func (r *cdnResolver) ResolveAt(ctx context.Context, ecosystem, group, kind, ver
 	// pathErr != nil means an unsafe segment was detected; disk cache is silently
 	// skipped so the schema is still served from the network.
 	if pathErr == nil {
-		if b, err := os.ReadFile(cachePath); err == nil {
+		if b, err := os.ReadFile(cachePath); err == nil && registry.ComputeIntegrity(b) == entry.Integrity {
 			return CDNResolveResult{Version: version, Integrity: entry.Integrity, SchemaBytes: b, FromCache: true}, nil
 		}
+		// Cache miss or stale: fall through to CDN fetch.
 	}
 	body, err := r.client.FetchSchema(ctx, ecosystem, group, version, kind)
 	if err != nil {

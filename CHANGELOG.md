@@ -4,6 +4,18 @@ All notable changes to the `schemalock` binary are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/);
 this project uses [Semantic Versioning](https://semver.org/).
 
+## 0.3.1 — 2026-06-05
+
+### Fixed
+
+- **Stale cache bypasses integrity check.** When the CDN re-publishes a schema
+  (updating its hash in `manifest.json`), the disk-cached copy was returned
+  directly without re-verification. The worker's defence-in-depth check then
+  silently failed, producing no diagnostics for the affected file. Both the
+  unpinned (`Resolve`) and pinned (`ResolveAt`) paths now verify the cached
+  bytes against the current manifest hash before serving them; a mismatch
+  triggers a fresh CDN fetch.
+
 ## 0.3.0 — 2026-06-05
 
 ### Added
