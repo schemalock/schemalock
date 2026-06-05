@@ -87,7 +87,8 @@ func bootstrapKindCompletions(
 
 	items := make([]lsp.CompletionItem, 0, len(kinds))
 	for i, kind := range kinds {
-		items = append(items, lsp.CompletionItem{
+		entry := manifest.Kinds[kind]
+		item := lsp.CompletionItem{
 			Label:      kind,
 			Kind:       completionKindEnum,
 			Detail:     "Kind from " + group + " @ " + version,
@@ -97,7 +98,18 @@ func bootstrapKindCompletions(
 				Range:   wordRange,
 				NewText: kind,
 			},
-		})
+		}
+		if entry.Deprecated {
+			item.Tags = []lsp.CompletionItemTag{lsp.CompletionItemTagDeprecated}
+			item.Detail = "(deprecated) " + item.Detail
+		}
+		if entry.Description != "" {
+			item.Documentation = lsp.MarkupContent{
+				Kind:  lsp.Markdown,
+				Value: entry.Description,
+			}
+		}
+		items = append(items, item)
 	}
 	return items
 }

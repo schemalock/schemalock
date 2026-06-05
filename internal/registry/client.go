@@ -74,6 +74,10 @@ type KindEntry struct {
 	Integrity string `json:"integrity"`
 	// Size is the byte count of the uploaded <Kind>.json file.
 	Size int `json:"size"`
+	// Deprecated is true when the CRD is marked deprecated by the upstream operator.
+	Deprecated bool `json:"deprecated,omitempty"`
+	// Description is the root schema description (trimmed).
+	Description string `json:"description,omitempty"`
 }
 
 // FetchManifest GETs <ecosystem>/<group>/<version>/manifest.json and
