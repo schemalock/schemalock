@@ -39,8 +39,8 @@ preflight:
 	@if [ -n "$$(git status --porcelain)" ]; then \
 	  echo "ERROR: working tree not clean"; exit 1; \
 	fi
-	@if [ "$$(git rev-parse --abbrev-ref HEAD)" != "main" ]; then \
-	  echo "ERROR: not on main branch"; exit 1; \
+	@if [ "$$(git rev-parse --abbrev-ref HEAD)" != "master" ]; then \
+	  echo "ERROR: not on master branch"; exit 1; \
 	fi
 	@if git rev-parse "$(TAG)" >/dev/null 2>&1; then \
 	  echo "ERROR: tag $(TAG) already exists"; exit 1; \

@@ -4,6 +4,25 @@ All notable changes to the `schemalock` binary are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/);
 this project uses [Semantic Versioning](https://semver.org/).
 
+## 0.3.0 — 2026-06-05
+
+### Added
+
+- **`$ref` and `allOf` completion.** The completion engine now follows JSON
+  Schema `$ref` and `allOf` references recursively (depth-capped at 16),
+  so completions work for CRD kinds that compose their schema via
+  referencing rather than declaring properties inline. `requiredSet()`
+  applies the same traversal, so required-field hints remain accurate for
+  composed schemas.
+- **Deprecated kind marking in completion.** Kinds whose `manifest.json`
+  entry carries `deprecated: true` now appear in the completion dropdown
+  with a strikethrough (VS Code `CompletionItemTagDeprecated`) and a
+  `(deprecated)` detail prefix. The description field is surfaced as
+  Markdown docs in the completion popup.
+  Note: existing CDN entries need a `--republish` re-run in `ingest/` to
+  backfill the `deprecated` and `description` fields onto already-published
+  manifests.
+
 ## 0.2.0 — 2026-06-02
 
 ### Added
