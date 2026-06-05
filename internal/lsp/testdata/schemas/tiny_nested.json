@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cdn.schemalock.dev/kubernetes/certmanager.io/1.0.0/TinyNested.json",
+  "$defs": {
+    "IssuerRef": {
+      "type": "object",
+      "properties": {
+        "name":  { "type": "string" },
+        "kind":  { "type": "string", "enum": ["Issuer", "ClusterIssuer"] },
+        "group": { "type": "string" }
+      }
+    }
+  },
+  "title": "TinyNested",
+  "description": "TinyNested is a synthetic fixture for testing nested + array navigation.",
+  "type": "object",
+  "required": ["apiVersion", "kind"],
+  "properties": {
+    "apiVersion": {
+      "type": "string",
+      "enum": ["certmanager.io/v1"]
+    },
+    "kind": {
+      "type": "string",
+      "enum": ["TinyNested"]
+    },
+    "spec": {
+      "type": "object",
+      "properties": {
+        "issuerRef": { "$ref": "#/$defs/IssuerRef" },
+        "dnsNames": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "subjects": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "kind": { "type": "string", "enum": ["Group", "User"] }
+            }
+          }
+        }
+      }
+    }
+  }
+}

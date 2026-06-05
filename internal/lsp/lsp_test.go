@@ -31,12 +31,21 @@ import (
 // schemaBytes is the content of the tiny VMCluster schema, loaded once.
 var schemaBytes []byte
 
+// nestedSchemaBytes is the content of the tiny TinyNested schema, loaded once.
+var nestedSchemaBytes []byte
+
 func init() {
 	b, err := os.ReadFile("testdata/schemas/tiny_vmcluster.json")
 	if err != nil {
 		panic("cannot load tiny_vmcluster.json: " + err.Error())
 	}
 	schemaBytes = b
+
+	nb, err := os.ReadFile("testdata/schemas/tiny_nested.json")
+	if err != nil {
+		panic("cannot load tiny_nested.json: " + err.Error())
+	}
+	nestedSchemaBytes = nb
 }
 
 // newTestRegistry starts an httptest.Server that serves a tiny manifest and
@@ -79,6 +88,115 @@ func newTestRegistry(t *testing.T) *httptest.Server {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// newTestRegistryNested starts an httptest.Server that serves the TinyNested
+// schema in addition to the VMCluster schema. Used by Task 5/6 integration tests.
+func newTestRegistryNested(t *testing.T) *httptest.Server {
+	t.Helper()
+
+	schemaIntegrity := registry.ComputeIntegrity(schemaBytes)
+	nestedIntegrity := registry.ComputeIntegrity(nestedSchemaBytes)
+
+	vmManifest := fmt.Sprintf(`{
+		"version": 1,
+		"kinds": {
+			"VMCluster": {
+				"integrity": %q,
+				"size": %d
+			}
+		}
+	}`, schemaIntegrity, len(schemaBytes))
+
+	nestedManifest := fmt.Sprintf(`{
+		"version": 1,
+		"kinds": {
+			"TinyNested": {
+				"integrity": %q,
+				"size": %d
+			}
+		}
+	}`, nestedIntegrity, len(nestedSchemaBytes))
+
+	mux := http.NewServeMux()
+	// VMCluster routes (unchanged).
+	mux.HandleFunc("/kubernetes/operator.victoriametrics.com/versions.json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`["0.70.0"]`))
+	})
+	mux.HandleFunc("/kubernetes/operator.victoriametrics.com/0.70.0/manifest.json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(vmManifest))
+	})
+	mux.HandleFunc("/kubernetes/operator.victoriametrics.com/0.70.0/VMCluster.json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(schemaBytes)
+	})
+	// TinyNested routes.
+	mux.HandleFunc("/kubernetes/certmanager.io/versions.json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`["1.0.0"]`))
+	})
+	mux.HandleFunc("/kubernetes/certmanager.io/1.0.0/manifest.json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(nestedManifest))
+	})
+	mux.HandleFunc("/kubernetes/certmanager.io/1.0.0/TinyNested.json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(nestedSchemaBytes)
+	})
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// newSessionNested builds a server session backed by the nested-schema registry.
+func newSessionNested(t *testing.T) *session {
+	t.Helper()
+	srv := newTestRegistryNested(t)
+
+	cacheRoot := t.TempDir()
+	c := cache.New(cacheRoot)
+	regClient := registry.NewClient(srv.URL)
+	logger := log.New(io.Discard, "", 0)
+
+	server := lsp.NewServer(lsp.Config{
+		Cache:    c,
+		Registry: regClient,
+		Logger:   logger,
+	})
+
+	pr, pw := io.Pipe()
+	or, ow := io.Pipe()
+
+	errCh := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	vw := &validatingWriter{t: t, inner: ow}
+
+	go func() {
+		rwc := &testRWC{r: pr, w: vw, onClose: func() {
+			pr.CloseWithError(io.EOF)
+			ow.Close()
+		}}
+		errCh <- server.Run(ctx, rwc)
+		ow.Close()
+	}()
+
+	s := &session{
+		server: server,
+		pr:     pr,
+		pw:     pw,
+		or:     or,
+		ow:     ow,
+		br:     bufio.NewReader(or),
+		errCh:  errCh,
+		vw:     vw,
+	}
+	t.Cleanup(func() { vw.Validate() })
+	return s
 }
 
 // session drives a Server through an in-memory pipe.
@@ -1911,6 +2029,332 @@ func TestCompletion_KindBootstrap_CDNFallback(t *testing.T) {
 	}
 
 	s.send(t, makeShutdownReq(141))
+	s.readFrame(t)
+	s.send(t, makeExitNotif())
+	s.waitDone(t, 3*time.Second)
+}
+
+// --------------------------------------------------------------------------
+// Task 5: Integration tests — nested object + array navigation (TinyNested)
+// --------------------------------------------------------------------------
+
+// goodYAMLNested is the base TinyNested document used across Task 5/6 tests.
+// 0-based line numbers:
+//   0: apiVersion: certmanager.io/v1
+//   1: kind: TinyNested
+//   2: spec:
+//   3:   issuerRef:
+//   4:     name: my-issuer
+//   5:   dnsNames:
+//   6:     - example.com
+//   7:   subjects:
+//   8:     - name: alice
+//   9:       kind: User
+const goodYAMLNested = `apiVersion: certmanager.io/v1
+kind: TinyNested
+spec:
+  issuerRef:
+    name: my-issuer
+  dnsNames:
+    - example.com
+  subjects:
+    - name: alice
+      kind: User`
+
+// initSessionNested initialises a TinyNested session (initialize + initialized).
+func initSessionNested(t *testing.T, s *session) {
+	t.Helper()
+	workspaceDir, err := filepath.Abs("testdata/workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.send(t, makeInitializeReq(1, workspaceDir))
+	s.readFrame(t)
+	s.send(t, makeInitializedNotif())
+}
+
+// TestNested_NestedObject_KeyPosition_Properties verifies that completion at a
+// blank line nested inside spec.issuerRef (value side of an object reached via
+// $ref) returns the issuerRef properties: name, kind, group.
+func TestNested_NestedObject_KeyPosition_Properties(t *testing.T) {
+	s := newSessionNested(t)
+	defer s.close(t)
+	initSessionNested(t, s)
+
+	// YAML: cursor on a blank line indented inside issuerRef (after name: my-issuer).
+	// 0-based lines:
+	//   0: apiVersion: certmanager.io/v1
+	//   1: kind: TinyNested
+	//   2: spec:
+	//   3:   issuerRef:
+	//   4:     name: my-issuer
+	//   5:   [blank, 4-space indent → cursor at col 5 in 1-based]
+	yamlDoc := "apiVersion: certmanager.io/v1\n" +
+		"kind: TinyNested\n" +
+		"spec:\n" +
+		"  issuerRef:\n" +
+		"    name: my-issuer\n" +
+		"    "
+
+	docURI := "file:///workspace/nested_key.yaml"
+	s.send(t, makeDidOpenReq(docURI, yamlDoc, 1))
+	waitForDiagnostics(t, s, docURI)
+
+	// Cursor at LSP (line=5, char=4) — inside issuerRef's child scope.
+	s.send(t, makeCompletionReq(300, docURI, 5, 4))
+	resp := s.readFrame(t)
+
+	if resp["error"] != nil {
+		t.Fatalf("unexpected error: %v", resp["error"])
+	}
+	result, _ := resp["result"].(map[string]any)
+	items, _ := result["items"].([]any)
+
+	labels := make(map[string]bool, len(items))
+	for _, it := range items {
+		m, _ := it.(map[string]any)
+		if lbl, _ := m["label"].(string); lbl != "" {
+			labels[lbl] = true
+		}
+	}
+
+	for _, want := range []string{"kind", "group"} {
+		if !labels[want] {
+			t.Errorf("issuerRef key-position completion missing %q; got: %v", want, labels)
+		}
+	}
+	// "name" is already present so it should be filtered.
+	if labels["name"] {
+		t.Error("issuerRef key-position completion should not include already-present 'name'")
+	}
+
+	s.send(t, makeShutdownReq(301))
+	s.readFrame(t)
+	s.send(t, makeExitNotif())
+	s.waitDone(t, 3*time.Second)
+}
+
+// TestNested_NestedObject_ValuePosition_Enum verifies that completion at the
+// value position of spec.issuerRef.kind returns the enum values Issuer and
+// ClusterIssuer.
+func TestNested_NestedObject_ValuePosition_Enum(t *testing.T) {
+	s := newSessionNested(t)
+	defer s.close(t)
+	initSessionNested(t, s)
+
+	// YAML with issuerRef.kind present on line 5 (0-based).
+	// 0-based lines:
+	//   4:     kind: Issuer
+	yamlDoc := "apiVersion: certmanager.io/v1\n" +
+		"kind: TinyNested\n" +
+		"spec:\n" +
+		"  issuerRef:\n" +
+		"    kind: Issuer\n"
+
+	docURI := "file:///workspace/nested_enum.yaml"
+	s.send(t, makeDidOpenReq(docURI, yamlDoc, 1))
+	waitForDiagnostics(t, s, docURI)
+
+	// "kind" starts at col 5 (1-based) = char 4 (0-based); length=4; keyEndCol=8.
+	// Cursor at char=10 (past ": ") → value position.
+	s.send(t, makeCompletionReq(310, docURI, 4, 10))
+	resp := s.readFrame(t)
+
+	if resp["error"] != nil {
+		t.Fatalf("unexpected error: %v", resp["error"])
+	}
+	result, _ := resp["result"].(map[string]any)
+	items, _ := result["items"].([]any)
+
+	labels := make(map[string]bool, len(items))
+	for _, it := range items {
+		m, _ := it.(map[string]any)
+		if lbl, _ := m["label"].(string); lbl != "" {
+			labels[lbl] = true
+		}
+	}
+
+	for _, want := range []string{"Issuer", "ClusterIssuer"} {
+		if !labels[want] {
+			t.Errorf("issuerRef.kind enum completion missing %q; got: %v", want, labels)
+		}
+	}
+
+	s.send(t, makeShutdownReq(311))
+	s.readFrame(t)
+	s.send(t, makeExitNotif())
+	s.waitDone(t, 3*time.Second)
+}
+
+// TestNested_ArrayOfObjects_KeyPosition verifies that completion on a blank line
+// inside an array-of-objects item (spec.subjects[0]) returns the item's
+// object properties: name, kind.
+func TestNested_ArrayOfObjects_KeyPosition(t *testing.T) {
+	s := newSessionNested(t)
+	defer s.close(t)
+	initSessionNested(t, s)
+
+	// YAML with one subjects item that only has "name", cursor on next line.
+	// 0-based lines:
+	//   0: apiVersion: certmanager.io/v1
+	//   1: kind: TinyNested
+	//   2: spec:
+	//   3:   subjects:
+	//   4:     - name: alice
+	//   5:       [blank, 6-space indent → sibling of name inside item]
+	yamlDoc := "apiVersion: certmanager.io/v1\n" +
+		"kind: TinyNested\n" +
+		"spec:\n" +
+		"  subjects:\n" +
+		"    - name: alice\n" +
+		"      "
+
+	docURI := "file:///workspace/arr_obj_key.yaml"
+	s.send(t, makeDidOpenReq(docURI, yamlDoc, 1))
+	waitForDiagnostics(t, s, docURI)
+
+	// Cursor at (line=5, char=6) — sibling indent of "name" inside item 0.
+	s.send(t, makeCompletionReq(320, docURI, 5, 6))
+	resp := s.readFrame(t)
+
+	if resp["error"] != nil {
+		t.Fatalf("unexpected error: %v", resp["error"])
+	}
+	result, _ := resp["result"].(map[string]any)
+	items, _ := result["items"].([]any)
+
+	labels := make(map[string]bool, len(items))
+	for _, it := range items {
+		m, _ := it.(map[string]any)
+		if lbl, _ := m["label"].(string); lbl != "" {
+			labels[lbl] = true
+		}
+	}
+
+	if !labels["kind"] {
+		t.Errorf("subjects[0] key-position completion missing 'kind'; got: %v", labels)
+	}
+	// "name" should be filtered (already present).
+	if labels["name"] {
+		t.Error("subjects[0] completion should not include already-present 'name'")
+	}
+
+	s.send(t, makeShutdownReq(321))
+	s.readFrame(t)
+	s.send(t, makeExitNotif())
+	s.waitDone(t, 3*time.Second)
+}
+
+// TestNested_ArrayOfObjects_EnumValue verifies that completion at the value
+// position of spec.subjects[0].kind returns the enum values Group and User.
+func TestNested_ArrayOfObjects_EnumValue(t *testing.T) {
+	s := newSessionNested(t)
+	defer s.close(t)
+	initSessionNested(t, s)
+
+	// YAML with subjects[0].kind present.
+	// 0-based lines:
+	//   4:       kind: Group
+	yamlDoc := "apiVersion: certmanager.io/v1\n" +
+		"kind: TinyNested\n" +
+		"spec:\n" +
+		"  subjects:\n" +
+		"    - kind: Group\n"
+
+	docURI := "file:///workspace/arr_obj_enum.yaml"
+	s.send(t, makeDidOpenReq(docURI, yamlDoc, 1))
+	waitForDiagnostics(t, s, docURI)
+
+	// "kind" starts at char 6 (0-based); length=4; keyEndCol=10.
+	// Cursor at char=12 (past ": ") → value position.
+	s.send(t, makeCompletionReq(330, docURI, 4, 12))
+	resp := s.readFrame(t)
+
+	if resp["error"] != nil {
+		t.Fatalf("unexpected error: %v", resp["error"])
+	}
+	result, _ := resp["result"].(map[string]any)
+	items, _ := result["items"].([]any)
+
+	labels := make(map[string]bool, len(items))
+	for _, it := range items {
+		m, _ := it.(map[string]any)
+		if lbl, _ := m["label"].(string); lbl != "" {
+			labels[lbl] = true
+		}
+	}
+
+	for _, want := range []string{"Group", "User"} {
+		if !labels[want] {
+			t.Errorf("subjects[0].kind enum completion missing %q; got: %v", want, labels)
+		}
+	}
+
+	s.send(t, makeShutdownReq(331))
+	s.readFrame(t)
+	s.send(t, makeExitNotif())
+	s.waitDone(t, 3*time.Second)
+}
+
+// --------------------------------------------------------------------------
+// Task 6: Hover regression guard — array + $ref navigation
+// --------------------------------------------------------------------------
+
+// TestNested_Hover_ArrayItemEnum verifies that hovering over
+// spec.subjects[0].kind on the TinyNested fixture returns a hover body
+// that contains the enum summary (Group | User), confirming that Tasks 1–2
+// fix the ownedHover path automatically (it shares schemaAtPointer).
+func TestNested_Hover_ArrayItemEnum(t *testing.T) {
+	s := newSessionNested(t)
+	defer s.close(t)
+	initSessionNested(t, s)
+
+	// YAML with subjects[0].kind on line 4 (0-based).
+	// 0-based lines:
+	//   0: apiVersion: certmanager.io/v1
+	//   1: kind: TinyNested
+	//   2: spec:
+	//   3:   subjects:
+	//   4:     - kind: User
+	yamlDoc := "apiVersion: certmanager.io/v1\n" +
+		"kind: TinyNested\n" +
+		"spec:\n" +
+		"  subjects:\n" +
+		"    - kind: User\n"
+
+	docURI := "file:///workspace/hover_arr_enum.yaml"
+	s.send(t, makeDidOpenReq(docURI, yamlDoc, 1))
+	waitForDiagnostics(t, s, docURI)
+
+	// Hover over "kind" key inside subjects[0] at LSP (line=4, char=6).
+	// "kind" is at char 6 (0-based) inside the list item.
+	s.send(t, makeHoverReq(400, docURI, 4, 6))
+	resp := s.readFrame(t)
+
+	if resp["error"] != nil {
+		t.Fatalf("unexpected hover error: %v", resp["error"])
+	}
+
+	result, ok := resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("hover result not a map (got nil or wrong type): %T %v", resp["result"], resp["result"])
+	}
+
+	contents, ok := result["contents"].(map[string]any)
+	if !ok {
+		t.Fatalf("hover contents not a map: %v", result["contents"])
+	}
+
+	value, _ := contents["value"].(string)
+	if value == "" {
+		t.Fatal("hover contents.value is empty; want enum summary")
+	}
+	// The hover body should mention the enum values from the subjects[0].kind schema.
+	if !strings.Contains(value, "Group") || !strings.Contains(value, "User") {
+		t.Errorf("hover value does not contain enum members 'Group' and 'User';\ngot:\n%s", value)
+	}
+
+	s.send(t, makeShutdownReq(401))
 	s.readFrame(t)
 	s.send(t, makeExitNotif())
 	s.waitDone(t, 3*time.Second)

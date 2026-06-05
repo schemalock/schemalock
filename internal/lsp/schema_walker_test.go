@@ -760,6 +760,241 @@ func TestWordRangeAt(t *testing.T) {
 	}
 }
 
+// --------------------------------------------------------------------------
+// Task 3: completionItemsForProperties — effectiveProperties parity
+// --------------------------------------------------------------------------
+
+// TestCompletionItemsForProperties_ViaRef verifies that completion items are
+// built from properties reached through a $ref, not only direct Properties.
+func TestCompletionItemsForProperties_ViaRef(t *testing.T) {
+	raw := `{
+		"$schema": "https://json-schema.org/draft/2020-12/schema",
+		"$defs": {
+			"Inner": {
+				"type": "object",
+				"properties": {
+					"alpha": {"type": "string"},
+					"beta":  {"type": "integer"}
+				}
+			}
+		},
+		"type": "object",
+		"properties": {
+			"spec": {"$ref": "#/$defs/Inner"}
+		}
+	}`
+	root := buildSchema(t, raw)
+	// Get the spec sub-schema (which is a $ref to Inner).
+	specSch := schemaAtPointer(root, "/spec")
+	if specSch == nil {
+		t.Fatal("could not navigate to /spec")
+	}
+
+	items := completionItemsForProperties(specSch, nil, lspprot.Range{})
+	labels := make(map[string]bool, len(items))
+	for _, it := range items {
+		labels[it.Label] = true
+	}
+	if !labels["alpha"] {
+		t.Errorf("completionItemsForProperties via $ref missing 'alpha'; got: %v", labels)
+	}
+	if !labels["beta"] {
+		t.Errorf("completionItemsForProperties via $ref missing 'beta'; got: %v", labels)
+	}
+}
+
+// TestCompletionItemsForProperties_ViaAllOf verifies that completion items
+// include properties from allOf sub-schemas.
+func TestCompletionItemsForProperties_ViaAllOf(t *testing.T) {
+	raw := `{
+		"$schema": "https://json-schema.org/draft/2020-12/schema",
+		"type": "object",
+		"allOf": [
+			{"properties": {"base": {"type": "string"}}},
+			{"properties": {"extra": {"type": "integer"}}}
+		]
+	}`
+	sch := buildSchema(t, raw)
+
+	items := completionItemsForProperties(sch, nil, lspprot.Range{})
+	labels := make(map[string]bool, len(items))
+	for _, it := range items {
+		labels[it.Label] = true
+	}
+	if !labels["base"] {
+		t.Errorf("completionItemsForProperties via allOf missing 'base'; got: %v", labels)
+	}
+	if !labels["extra"] {
+		t.Errorf("completionItemsForProperties via allOf missing 'extra'; got: %v", labels)
+	}
+}
+
+// --------------------------------------------------------------------------
+// Task 1: schemaAtPointer — array segment navigation
+// --------------------------------------------------------------------------
+
+// TestSchemaAtPointer_ArrayItems2020Object verifies that a numeric pointer
+// segment resolves through items (2020-12 Items keyword) when the parent schema
+// is an array whose items describe an object with named properties.
+func TestSchemaAtPointer_ArrayItems2020Object(t *testing.T) {
+	raw := `{
+		"$schema": "https://json-schema.org/draft/2020-12/schema",
+		"type": "array",
+		"items": {"type": "object", "properties": {"name": {"type": "string"}}}
+	}`
+	sch := buildSchema(t, raw)
+
+	// /0/name should resolve to the string schema for "name".
+	got := schemaAtPointer(sch, "/0/name")
+	if got == nil {
+		t.Fatal("schemaAtPointer(/0/name) returned nil, want string schema")
+	}
+	if detail := schemaDetail(got); detail != "string" {
+		t.Errorf("schemaDetail = %q, want \"string\"", detail)
+	}
+}
+
+// TestSchemaAtPointer_PrefixItems verifies that a numeric pointer segment
+// resolves through PrefixItems when the index is within bounds.
+func TestSchemaAtPointer_PrefixItems(t *testing.T) {
+	raw := `{
+		"$schema": "https://json-schema.org/draft/2020-12/schema",
+		"type": "array",
+		"prefixItems": [
+			{"type": "string"},
+			{"type": "integer"}
+		]
+	}`
+	sch := buildSchema(t, raw)
+
+	// /1 should resolve to the integer schema (PrefixItems[1]).
+	got := schemaAtPointer(sch, "/1")
+	if got == nil {
+		t.Fatal("schemaAtPointer(/1) returned nil, want integer schema")
+	}
+	if detail := schemaDetail(got); detail != "integer" {
+		t.Errorf("schemaDetail = %q, want \"integer\"", detail)
+	}
+}
+
+// TestSchemaAtPointer_ArrayOfScalars verifies that /0 on an array of strings
+// resolves to the items scalar schema.
+func TestSchemaAtPointer_ArrayOfScalars(t *testing.T) {
+	raw := `{
+		"$schema": "https://json-schema.org/draft/2020-12/schema",
+		"type": "array",
+		"items": {"type": "string"}
+	}`
+	sch := buildSchema(t, raw)
+
+	got := schemaAtPointer(sch, "/0")
+	if got == nil {
+		t.Fatal("schemaAtPointer(/0) returned nil, want string schema")
+	}
+	if detail := schemaDetail(got); detail != "string" {
+		t.Errorf("schemaDetail = %q, want \"string\"", detail)
+	}
+}
+
+// TestSchemaAtPointer_NumericPropertyWins verifies that a schema with an
+// explicit property named "0" resolves through Properties rather than items.
+func TestSchemaAtPointer_NumericPropertyWins(t *testing.T) {
+	raw := `{
+		"$schema": "https://json-schema.org/draft/2020-12/schema",
+		"type": "object",
+		"properties": {
+			"0": {"type": "string", "description": "prop zero"}
+		}
+	}`
+	sch := buildSchema(t, raw)
+
+	got := schemaAtPointer(sch, "/0")
+	if got == nil {
+		t.Fatal("schemaAtPointer(/0) returned nil, want string schema from properties")
+	}
+	if got.Description != "prop zero" {
+		t.Errorf("Description = %q, want \"prop zero\" (Properties should win over Items)", got.Description)
+	}
+}
+
+// --------------------------------------------------------------------------
+// Task 2: schemaAtPointer — $ref and allOf navigation
+// --------------------------------------------------------------------------
+
+// TestSchemaAtPointer_FollowsRef verifies that a properties lookup follows
+// $ref indirection to reach nested properties.
+func TestSchemaAtPointer_FollowsRef(t *testing.T) {
+	raw := `{
+		"$schema": "https://json-schema.org/draft/2020-12/schema",
+		"$defs": {
+			"Spec": {
+				"type": "object",
+				"properties": {
+					"name": {"type": "string"}
+				}
+			}
+		},
+		"type": "object",
+		"properties": {
+			"spec": {"$ref": "#/$defs/Spec"}
+		}
+	}`
+	sch := buildSchema(t, raw)
+
+	// /spec/name should resolve through $ref to the string schema.
+	got := schemaAtPointer(sch, "/spec/name")
+	if got == nil {
+		t.Fatal("schemaAtPointer(/spec/name) returned nil, want string schema")
+	}
+	if detail := schemaDetail(got); detail != "string" {
+		t.Errorf("schemaDetail = %q, want \"string\"", detail)
+	}
+}
+
+// TestSchemaAtPointer_AllOfMerge verifies that a properties lookup merges
+// allOf subschemas to find properties declared in a sibling subschema.
+func TestSchemaAtPointer_AllOfMerge(t *testing.T) {
+	raw := `{
+		"$schema": "https://json-schema.org/draft/2020-12/schema",
+		"$defs": {
+			"Base": {
+				"type": "object",
+				"properties": {
+					"base": {"type": "string"}
+				}
+			}
+		},
+		"type": "object",
+		"properties": {
+			"spec": {
+				"allOf": [
+					{"$ref": "#/$defs/Base"},
+					{"type": "object", "properties": {"extra": {"type": "integer"}}}
+				]
+			}
+		}
+	}`
+	sch := buildSchema(t, raw)
+
+	// /spec/extra should resolve through allOf to the integer schema.
+	got := schemaAtPointer(sch, "/spec/extra")
+	if got == nil {
+		t.Fatal("schemaAtPointer(/spec/extra) returned nil, want integer schema")
+	}
+	if detail := schemaDetail(got); detail != "integer" {
+		t.Errorf("schemaDetail = %q, want \"integer\"", detail)
+	}
+
+	// /spec/base should also resolve (inherited from the $ref base).
+	got2 := schemaAtPointer(sch, "/spec/base")
+	if got2 == nil {
+		t.Fatal("schemaAtPointer(/spec/base) returned nil, want string schema")
+	}
+	if detail := schemaDetail(got2); detail != "string" {
+		t.Errorf("schemaDetail = %q, want \"string\"", detail)
+	}
+}
+
 // TestPositionAt_KindValuePosition pins the positionAt output for various
 // cursor positions relative to the root-level `kind` field. These invariants
 // are the preconditions for bootstrapKindCompletions: if walker semantics

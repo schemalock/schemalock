@@ -207,16 +207,14 @@ func lastPointerSegment(ptr string) string {
 	return unescapePointerSegment(ptr[idx+1:])
 }
 
-// requiredSet returns the set of required property names for an object schema.
+// requiredSet returns the set of required property names for an object schema,
+// including required fields harvested from $ref and allOf sub-schemas.
 // Returns an empty (non-nil) map when sch is nil or has no required fields, so
 // callers can do parentRequired[name] without nil checks.
 func requiredSet(sch *jsonschema.Schema) map[string]bool {
-	out := make(map[string]bool)
-	if sch == nil {
-		return out
-	}
-	for _, r := range sch.Required {
-		out[r] = true
+	out := effectiveRequired(sch)
+	if out == nil {
+		return make(map[string]bool)
 	}
 	return out
 }
@@ -253,12 +251,79 @@ func existingKeysAt(parentPtr string, doc yamldoc.Document) []string {
 	return keys
 }
 
+// effectiveProperties returns the merged properties map for a schema,
+// following $ref and allOf entries recursively. depth limits recursion to
+// prevent cycles (the jsonschema/v6 compiler already prevents infinite refs at
+// compile time, but the guard adds defensive depth-bounding).
+//
+// Merge semantics: later entries in AllOf override earlier ones (last-write
+// wins), which matches the JSON Schema merge convention used for completion.
+// Direct Properties on the schema itself take the highest priority and are
+// applied last.
+func effectiveProperties(sch *jsonschema.Schema, depth int) map[string]*jsonschema.Schema {
+	const maxDepth = 16
+	if sch == nil || depth > maxDepth {
+		return nil
+	}
+
+	out := make(map[string]*jsonschema.Schema)
+
+	// Harvest from Ref first (lowest priority, overridden by allOf and direct).
+	if sch.Ref != nil {
+		for k, v := range effectiveProperties(sch.Ref, depth+1) {
+			out[k] = v
+		}
+	}
+
+	// Harvest from AllOf entries (each entry may itself have $ref/allOf).
+	for _, sub := range sch.AllOf {
+		for k, v := range effectiveProperties(sub, depth+1) {
+			out[k] = v
+		}
+	}
+
+	// Direct Properties on this schema win over everything.
+	for k, v := range sch.Properties {
+		out[k] = v
+	}
+
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// effectiveRequired returns the union of required property names from the
+// schema itself and from any $ref / allOf sub-schemas, up to depth maxDepth.
+func effectiveRequired(sch *jsonschema.Schema) map[string]bool {
+	out := make(map[string]bool)
+	collectRequired(sch, out, 0)
+	return out
+}
+
+func collectRequired(sch *jsonschema.Schema, out map[string]bool, depth int) {
+	const maxDepth = 16
+	if sch == nil || depth > maxDepth {
+		return
+	}
+	for _, r := range sch.Required {
+		out[r] = true
+	}
+	if sch.Ref != nil {
+		collectRequired(sch.Ref, out, depth+1)
+	}
+	for _, sub := range sch.AllOf {
+		collectRequired(sub, out, depth+1)
+	}
+}
+
 // schemaAtPointer walks the compiled JSON Schema following the given JSON
 // Pointer path and returns the sub-schema at that location.
 //
-// Only "properties" navigation is supported. Sequence indices and
-// patternProperties are not resolved in the PoC. Returns nil if the pointer
-// cannot be followed within the schema.
+// Supported navigation: object properties (by name), array items by numeric
+// index (tries PrefixItems first, then Items2020, then legacy Items *Schema),
+// $ref indirection, and allOf composition. patternProperties are not resolved.
+// Returns nil if the pointer cannot be followed within the schema.
 func schemaAtPointer(root *jsonschema.Schema, pointer string) *jsonschema.Schema {
 	if pointer == "" {
 		return root
@@ -273,16 +338,77 @@ func schemaAtPointer(root *jsonschema.Schema, pointer string) *jsonschema.Schema
 		// Unescape RFC 6901 segments.
 		seg = unescapePointerSegment(seg)
 
-		if cur.Properties != nil {
-			if child, ok := cur.Properties[seg]; ok {
-				cur = child
+		// Properties lookup first (numeric property names win over array index).
+		props := effectiveProperties(cur, 0)
+		if child, ok := props[seg]; ok {
+			cur = child
+			continue
+		}
+
+		// Try array index navigation when the segment is a non-negative integer.
+		if idx, ok := parseArrayIndex(seg); ok {
+			if next := arrayItemSchema(cur, idx); next != nil {
+				cur = next
 				continue
 			}
 		}
+
 		// Could not navigate; schema does not describe this path.
 		return nil
 	}
 	return cur
+}
+
+// parseArrayIndex returns (n, true) if s is a valid non-negative base-10
+// integer with no leading zeros (except "0" itself). Returns (0, false)
+// otherwise.
+func parseArrayIndex(s string) (int, bool) {
+	if s == "" {
+		return 0, false
+	}
+	// Reject leading zeros (e.g. "01") — not valid JSON Pointer array indices.
+	if len(s) > 1 && s[0] == '0' {
+		return 0, false
+	}
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n, true
+}
+
+// arrayItemSchema returns the schema for the item at position idx within an
+// array schema. It tries (in order):
+//  1. PrefixItems[idx] when idx is in bounds.
+//  2. Items2020 (the 2020-12 "items" keyword for additional items).
+//  3. Legacy Items asserted as *jsonschema.Schema (draft-07 "items" object form).
+//
+// Returns nil when none of these apply (e.g. no items defined, or sch is not
+// an array schema). Tuple-form Items ([]*Schema, draft-04) is deliberately
+// skipped — no landed CRD uses it.
+func arrayItemSchema(sch *jsonschema.Schema, idx int) *jsonschema.Schema {
+	if sch == nil {
+		return nil
+	}
+	// 1. PrefixItems (2020-12).
+	if idx < len(sch.PrefixItems) {
+		return sch.PrefixItems[idx]
+	}
+	// 2. Items2020 (additional items after prefixItems).
+	if sch.Items2020 != nil {
+		return sch.Items2020
+	}
+	// 3. Legacy Items as *jsonschema.Schema (draft-07 object form).
+	// The jsonschema/v6 library stores this as an `any` field; assert to *Schema.
+	if s, ok := sch.Items.(*jsonschema.Schema); ok {
+		return s
+	}
+	// TODO: tuple-form Items ([]*jsonschema.Schema, draft-04) is not handled;
+	// no landed CRD uses it. Drop through and return nil.
+	return nil
 }
 
 // schemaPropertiesAt returns the sub-schema for the parent of pointer, i.e.
@@ -332,11 +458,13 @@ func wordRangeAt(text string, pos lsp.Position) lsp.Range {
 }
 
 // completionItemsForProperties builds completion items from a schema's
-// Properties map, excluding keys already present at the cursor position.
+// effective properties map (direct Properties plus those reachable via $ref and
+// allOf), excluding keys already present at the cursor position.
 // wordRange is attached to each item as a TextEdit so VS Code derives the
 // filter prefix and replace target from the word at cursor.
 func completionItemsForProperties(sch *jsonschema.Schema, existingKeys []string, wordRange lsp.Range) []lsp.CompletionItem {
-	if sch == nil || sch.Properties == nil {
+	props := effectiveProperties(sch, 0)
+	if sch == nil || props == nil {
 		return nil
 	}
 
@@ -346,10 +474,10 @@ func completionItemsForProperties(sch *jsonschema.Schema, existingKeys []string,
 	}
 
 	// Build a set of required property names so they can be ranked first.
-	reqSet := requiredSet(sch)
+	reqSet := effectiveRequired(sch)
 
-	items := make([]lsp.CompletionItem, 0, len(sch.Properties))
-	for name, propSchema := range sch.Properties {
+	items := make([]lsp.CompletionItem, 0, len(props))
+	for name, propSchema := range props {
 		if existing[name] {
 			continue
 		}
@@ -430,16 +558,23 @@ const (
 )
 
 func propertyShape(sch *jsonschema.Schema) propShape {
-	if sch == nil || sch.Types == nil {
+	if sch == nil {
 		return shapeScalar
 	}
-	for _, t := range sch.Types.ToStrings() {
-		switch t {
-		case "object":
-			return shapeObject
-		case "array":
-			return shapeArray
+	if sch.Types != nil {
+		for _, t := range sch.Types.ToStrings() {
+			switch t {
+			case "object":
+				return shapeObject
+			case "array":
+				return shapeArray
+			}
 		}
+	}
+	// If the schema has no declared type but has effective properties (via $ref
+	// or allOf), treat it as an object so value-position completion works.
+	if effectiveProperties(sch, 0) != nil {
+		return shapeObject
 	}
 	return shapeScalar
 }
