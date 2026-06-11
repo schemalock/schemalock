@@ -238,6 +238,12 @@ func (s *Server) DidOpen(ctx context.Context, params *lsp.DidOpenTextDocumentPar
 	version := uint32(td.Version)
 	s.docs.Open(uri, version, td.Text)
 
+	// Invalidate any cached resolution before resolving with the real document
+	// text. A status-bar getDocumentState poll can reach the server before this
+	// didOpen and cache a StateUnindexable result (resolved from empty text)
+	// keyed by this URI; without this invalidation the Resolve below would hit
+	// that stale entry and suppress the documentStateChanged notification.
+	s.router.Invalidate(uri)
 	res := s.router.Resolve(ctx, uri, td.Text)
 	switch res.State {
 	case StatePinned, StateUnpinned, StatePreview:
@@ -634,7 +640,14 @@ func handleTyped[P any, R any](
 
 // handleGetDocumentState returns the current ResolveResult for a URI.
 func (s *Server) handleGetDocumentState(ctx context.Context, p protocol.GetDocumentStateParams) (protocol.GetDocumentStateResult, error) {
-	text, _, _ := s.docs.Get(p.URI)
+	text, _, ok := s.docs.Get(p.URI)
+	if !ok {
+		// Document not open yet (e.g. a status-bar poll racing didOpen).
+		// Resolving empty text here would cache StateUnindexable under this URI
+		// and poison the later didOpen resolution. Return Unindexable without
+		// touching the router cache; didOpen will resolve the real text.
+		return protocol.GetDocumentStateResult{State: protocol.State(StateUnindexable)}, nil
+	}
 	res := s.router.Resolve(ctx, p.URI, text)
 	return protocol.GetDocumentStateResult{
 		State:   protocol.State(res.State),
