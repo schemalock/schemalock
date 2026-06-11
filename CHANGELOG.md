@@ -4,6 +4,20 @@ All notable changes to the `schemalock` binary are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/);
 this project uses [Semantic Versioning](https://semver.org/).
 
+## 0.3.2 — 2026-06-11
+
+### Fixed
+
+- **Status-bar widget blank for documents polled before they open.** The
+  `schemalock/getDocumentState` request resolved not-yet-open documents with
+  empty text and cached the resulting `Unindexable` state keyed by URI. A
+  status-bar poll arriving before `textDocument/didOpen` (as the JetBrains
+  client issues on editor selection) poisoned that cache, so the subsequent
+  `didOpen` returned the stale state, skipped validation, and suppressed the
+  `documentStateChanged` notification — leaving the widget permanently blank.
+  `didOpen` now invalidates the cache before resolving, and `getDocumentState`
+  no longer resolves or caches documents that are not open.
+
 ## 0.3.1 — 2026-06-05
 
 ### Fixed
