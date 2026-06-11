@@ -9,3 +9,6 @@
 
 # Per-developer agent context. Everything under .claude/ is local-only.
 .claude/
+
+# JetBrains IDE project files (per-developer, local-only).
+.idea/
