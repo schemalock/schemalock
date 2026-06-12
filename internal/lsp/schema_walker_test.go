@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
-	"github.com/schemalock/app/internal/yamldoc"
+	"github.com/schemalock/schemalock/internal/yamldoc"
 	lspprot "go.lsp.dev/protocol"
 )
 

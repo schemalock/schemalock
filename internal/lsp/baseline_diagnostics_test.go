@@ -3,7 +3,7 @@ package lsp_test
 import (
 	"testing"
 
-	"github.com/schemalock/app/internal/lsp"
+	"github.com/schemalock/schemalock/internal/lsp"
 	lspprot "go.lsp.dev/protocol"
 )
 

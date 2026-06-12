@@ -9,8 +9,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/schemalock/app/internal/intent"
-	"github.com/schemalock/app/internal/registry"
+	"github.com/schemalock/schemalock/internal/intent"
+	"github.com/schemalock/schemalock/internal/registry"
 )
 
 const defaultRegistry = "https://cdn.schemalock.dev"

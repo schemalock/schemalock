@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/schemalock/app/internal/atomicfs"
-	"github.com/schemalock/app/internal/registry"
+	"github.com/schemalock/schemalock/internal/atomicfs"
+	"github.com/schemalock/schemalock/internal/registry"
 	"golang.org/x/sync/singleflight"
 )
 

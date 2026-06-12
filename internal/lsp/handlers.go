@@ -10,9 +10,9 @@ import (
 	"go.lsp.dev/jsonrpc2"
 	lsp "go.lsp.dev/protocol"
 
-	"github.com/schemalock/app/internal/intent"
-	"github.com/schemalock/app/internal/lsp/protocol"
-	"github.com/schemalock/app/internal/yamldoc"
+	"github.com/schemalock/schemalock/internal/intent"
+	"github.com/schemalock/schemalock/internal/lsp/protocol"
+	"github.com/schemalock/schemalock/internal/yamldoc"
 )
 
 // bootstrapKindCompletions returns a sorted list of Kind completion items for

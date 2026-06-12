@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/schemalock/app/internal/cache"
-	"github.com/schemalock/app/internal/lsp"
-	"github.com/schemalock/app/internal/lsp/lsptest"
-	"github.com/schemalock/app/internal/registry"
+	"github.com/schemalock/schemalock/internal/cache"
+	"github.com/schemalock/schemalock/internal/lsp"
+	"github.com/schemalock/schemalock/internal/lsp/lsptest"
+	"github.com/schemalock/schemalock/internal/registry"
 )
 
 // TestLiveCDN_VMClusterRoundTrip drives a full LSP session against the live

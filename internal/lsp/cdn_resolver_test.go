@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/schemalock/app/internal/registry"
+	"github.com/schemalock/schemalock/internal/registry"
 )
 
 // fakeCDN returns a httptest server that serves versions.json/manifest.json

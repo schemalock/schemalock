@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/schemalock/app/internal/intent"
-	"github.com/schemalock/app/internal/registry"
-	"github.com/schemalock/app/internal/yamldoc"
+	"github.com/schemalock/schemalock/internal/intent"
+	"github.com/schemalock/schemalock/internal/registry"
+	"github.com/schemalock/schemalock/internal/yamldoc"
 )
 
 // State is the resolution outcome surfaced to the editor.

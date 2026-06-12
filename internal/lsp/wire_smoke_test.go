@@ -25,10 +25,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/schemalock/app/internal/cache"
-	"github.com/schemalock/app/internal/lsp"
-	"github.com/schemalock/app/internal/lsp/lsptest"
-	"github.com/schemalock/app/internal/registry"
+	"github.com/schemalock/schemalock/internal/cache"
+	"github.com/schemalock/schemalock/internal/lsp"
+	"github.com/schemalock/schemalock/internal/lsp/lsptest"
+	"github.com/schemalock/schemalock/internal/registry"
 )
 
 // stdioRWC wraps an io.Reader and io.Writer into an io.ReadWriteCloser.

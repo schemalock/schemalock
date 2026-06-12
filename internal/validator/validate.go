@@ -9,7 +9,7 @@ import (
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/santhosh-tekuri/jsonschema/v6/kind"
 
-	"github.com/schemalock/app/internal/yamldoc"
+	"github.com/schemalock/schemalock/internal/yamldoc"
 )
 
 // escapePointerSegment applies RFC 6901 escaping to a single JSON Pointer

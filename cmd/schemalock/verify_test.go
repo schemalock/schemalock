@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/schemalock/app/internal/registry"
+	"github.com/schemalock/schemalock/internal/registry"
 )
 
 // startSchemaCDN serves versions.json + manifest.json + per-kind schemas for

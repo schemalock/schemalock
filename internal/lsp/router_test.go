@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/schemalock/app/internal/intent"
-	"github.com/schemalock/app/internal/registry"
+	"github.com/schemalock/schemalock/internal/intent"
+	"github.com/schemalock/schemalock/internal/registry"
 )
 
 // routerTestSchema is a minimal valid JSON Schema used for all router tests.

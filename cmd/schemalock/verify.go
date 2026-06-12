@@ -10,8 +10,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/schemalock/app/internal/lsp"
-	"github.com/schemalock/app/internal/validator"
+	"github.com/schemalock/schemalock/internal/lsp"
+	"github.com/schemalock/schemalock/internal/validator"
 )
 
 // runVerify discovers every YAML manifest under --path (default ".") and

@@ -10,9 +10,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/schemalock/app/internal/cache"
-	"github.com/schemalock/app/internal/intent"
-	"github.com/schemalock/app/internal/registry"
+	"github.com/schemalock/schemalock/internal/cache"
+	"github.com/schemalock/schemalock/internal/intent"
+	"github.com/schemalock/schemalock/internal/registry"
 )
 
 // Resolver is the exported facade over resolverChain for one-shot CLI

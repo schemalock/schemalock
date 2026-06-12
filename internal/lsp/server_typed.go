@@ -17,11 +17,11 @@ import (
 	"go.lsp.dev/jsonrpc2"
 	lsp "go.lsp.dev/protocol"
 
-	"github.com/schemalock/app/internal/intent"
-	"github.com/schemalock/app/internal/lsp/adapter/yamlls"
-	"github.com/schemalock/app/internal/lsp/protocol"
-	"github.com/schemalock/app/internal/registry"
-	"github.com/schemalock/app/internal/yamldoc"
+	"github.com/schemalock/schemalock/internal/intent"
+	"github.com/schemalock/schemalock/internal/lsp/adapter/yamlls"
+	"github.com/schemalock/schemalock/internal/lsp/protocol"
+	"github.com/schemalock/schemalock/internal/registry"
+	"github.com/schemalock/schemalock/internal/yamldoc"
 )
 
 // Initialize handles the LSP initialize request via the new jsonrpc2-based Run

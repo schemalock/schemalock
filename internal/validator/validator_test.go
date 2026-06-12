@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/schemalock/app/internal/yamldoc"
+	"github.com/schemalock/schemalock/internal/yamldoc"
 )
 
 // loadSchema reads a JSON schema from testdata and returns its bytes and a

@@ -52,7 +52,7 @@ tag: preflight
 	git push origin "$(TAG)"
 	@echo ""
 	@echo "==> tag pushed; release workflow will build + publish 5 binaries"
-	@echo "    https://github.com/schemalock/app/actions/workflows/release.yml"
+	@echo "    https://github.com/schemalock/schemalock/actions/workflows/release.yml"
 
 release: test tag watch
 

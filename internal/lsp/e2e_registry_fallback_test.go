@@ -20,10 +20,10 @@ import (
 
 	lspprot "go.lsp.dev/protocol"
 
-	"github.com/schemalock/app/internal/cache"
-	"github.com/schemalock/app/internal/lsp/protocol"
-	"github.com/schemalock/app/internal/registry"
-	"github.com/schemalock/app/internal/validator"
+	"github.com/schemalock/schemalock/internal/cache"
+	"github.com/schemalock/schemalock/internal/lsp/protocol"
+	"github.com/schemalock/schemalock/internal/registry"
+	"github.com/schemalock/schemalock/internal/validator"
 )
 
 // newTestServerWithCDN constructs a Server wired with a real cdnResolver

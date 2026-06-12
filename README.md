@@ -20,7 +20,7 @@ without authoring a lockfile first.
 ### Pre-built binaries (recommended)
 
 Download the binary for your platform from the
-[latest GitHub release](https://github.com/schemalock/app/releases/latest)
+[latest GitHub release](https://github.com/schemalock/schemalock/releases/latest)
 and place it on your `PATH`. Each release attaches
 `schemalock-{linux,darwin}-{x64,arm64}` and `schemalock-win32-x64.exe`
 plus a `SHA256SUMS` file.
@@ -30,13 +30,13 @@ plus a `SHA256SUMS` file.
 Requires Go 1.26 or newer.
 
 ```bash
-go install github.com/schemalock/app/cmd/schemalock@latest
+go install github.com/schemalock/schemalock/cmd/schemalock@latest
 ```
 
 Or clone and build:
 
 ```bash
-git clone https://github.com/schemalock/app
+git clone https://github.com/schemalock/schemalock
 cd app
 go build -o bin/schemalock ./cmd/schemalock
 ```

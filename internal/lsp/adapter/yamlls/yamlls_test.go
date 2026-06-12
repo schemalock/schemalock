@@ -3,7 +3,7 @@ package yamlls_test
 import (
 	"testing"
 
-	"github.com/schemalock/app/internal/lsp/adapter/yamlls"
+	"github.com/schemalock/schemalock/internal/lsp/adapter/yamlls"
 )
 
 // TestResolve_EmptyPathReturnsEmpty ensures Resolve("") with no yaml-ls on
