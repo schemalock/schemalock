@@ -8,7 +8,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/schemalock/app/internal/intent"
+	"github.com/schemalock/schemalock/internal/intent"
 )
 
 // runFmt canonicalizes a single schemalock.yaml in place. The file may be

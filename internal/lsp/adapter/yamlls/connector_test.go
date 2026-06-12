@@ -3,7 +3,7 @@ package yamlls_test
 import (
 	"testing"
 
-	"github.com/schemalock/app/internal/lsp/adapter/yamlls"
+	"github.com/schemalock/schemalock/internal/lsp/adapter/yamlls"
 )
 
 // TestEmptyConnector_NoPathReturnsNoOp verifies that NewConnector with an empty

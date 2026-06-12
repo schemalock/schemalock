@@ -17,7 +17,7 @@ import (
 
 	goyaml "github.com/goccy/go-yaml"
 
-	"github.com/schemalock/app/internal/atomicfs"
+	"github.com/schemalock/schemalock/internal/atomicfs"
 )
 
 // ErrMalformedIntent is returned when a schemalock.yaml file cannot be

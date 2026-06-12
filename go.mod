@@ -1,4 +1,4 @@
-module github.com/schemalock/app
+module github.com/schemalock/schemalock
 
 go 1.26.3
 

@@ -11,8 +11,8 @@ import (
 
 	lspprot "go.lsp.dev/protocol"
 
-	"github.com/schemalock/app/internal/cache"
-	"github.com/schemalock/app/internal/registry"
+	"github.com/schemalock/schemalock/internal/cache"
+	"github.com/schemalock/schemalock/internal/registry"
 )
 
 // TestCancelMu_ConcurrentDidOpenChangeClose validates that the cancelMu

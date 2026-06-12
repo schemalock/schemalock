@@ -15,8 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/schemalock/app/internal/atomicfs"
-	"github.com/schemalock/app/internal/registry"
+	"github.com/schemalock/schemalock/internal/atomicfs"
+	"github.com/schemalock/schemalock/internal/registry"
 )
 
 // ErrNotFound is returned by [Cache.ReadSchema] when no cached file exists for

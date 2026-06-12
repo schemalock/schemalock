@@ -21,7 +21,7 @@ import (
 
 	lspprot "go.lsp.dev/protocol"
 
-	"github.com/schemalock/app/internal/lsp/protocol"
+	"github.com/schemalock/schemalock/internal/lsp/protocol"
 )
 
 // TestGetDocumentStatePollBeforeDidOpen_StillNotifies reproduces the race: a

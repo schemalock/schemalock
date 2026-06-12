@@ -8,8 +8,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/schemalock/app/internal/cache"
-	"github.com/schemalock/app/internal/registry"
+	"github.com/schemalock/schemalock/internal/cache"
+	"github.com/schemalock/schemalock/internal/registry"
 )
 
 // testArgs holds a fixed (ecosystem, group, version, kind) tuple reused across

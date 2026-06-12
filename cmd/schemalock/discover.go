@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/schemalock/app/internal/yamldoc"
+	"github.com/schemalock/schemalock/internal/yamldoc"
 )
 
 // discoverManifests walks root and returns the absolute paths of every

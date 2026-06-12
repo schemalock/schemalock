@@ -7,9 +7,9 @@ import (
 
 	lsp "go.lsp.dev/protocol"
 
-	"github.com/schemalock/app/internal/cache"
-	"github.com/schemalock/app/internal/registry"
-	"github.com/schemalock/app/internal/validator"
+	"github.com/schemalock/schemalock/internal/cache"
+	"github.com/schemalock/schemalock/internal/registry"
+	"github.com/schemalock/schemalock/internal/validator"
 )
 
 func newTestDeps(t *testing.T) WorkerDeps {

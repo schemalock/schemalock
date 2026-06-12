@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/schemalock/app/internal/registry"
+	"github.com/schemalock/schemalock/internal/registry"
 )
 
 // knownUserAgent is the default User-Agent the client must send on every request.

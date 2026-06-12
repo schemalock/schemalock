@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/schemalock/app/internal/lsp/adapter/yamlls"
-	"github.com/schemalock/app/internal/lsp/adapter/yamlls/mock"
+	"github.com/schemalock/schemalock/internal/lsp/adapter/yamlls"
+	"github.com/schemalock/schemalock/internal/lsp/adapter/yamlls/mock"
 	lsp "go.lsp.dev/protocol"
 )
 

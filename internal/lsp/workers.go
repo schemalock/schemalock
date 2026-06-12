@@ -7,10 +7,10 @@ import (
 
 	lsp "go.lsp.dev/protocol"
 
-	"github.com/schemalock/app/internal/cache"
-	"github.com/schemalock/app/internal/registry"
-	"github.com/schemalock/app/internal/validator"
-	"github.com/schemalock/app/internal/yamldoc"
+	"github.com/schemalock/schemalock/internal/cache"
+	"github.com/schemalock/schemalock/internal/registry"
+	"github.com/schemalock/schemalock/internal/validator"
+	"github.com/schemalock/schemalock/internal/yamldoc"
 )
 
 // job is one unit of work submitted to the [WorkerPool]: validate one version

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/schemalock/app/internal/lsp/lsptest"
+	"github.com/schemalock/schemalock/internal/lsp/lsptest"
 )
 
 // TestRunServe_NoStdioFlag asserts that serve without --stdio returns ErrUsage.

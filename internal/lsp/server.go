@@ -12,12 +12,12 @@ import (
 	lspprot "go.lsp.dev/protocol"
 	"go.uber.org/zap"
 
-	"github.com/schemalock/app/internal/cache"
-	"github.com/schemalock/app/internal/intent"
-	"github.com/schemalock/app/internal/lsp/adapter/yamlls"
-	"github.com/schemalock/app/internal/lsp/protocol"
-	"github.com/schemalock/app/internal/registry"
-	"github.com/schemalock/app/internal/validator"
+	"github.com/schemalock/schemalock/internal/cache"
+	"github.com/schemalock/schemalock/internal/intent"
+	"github.com/schemalock/schemalock/internal/lsp/adapter/yamlls"
+	"github.com/schemalock/schemalock/internal/lsp/protocol"
+	"github.com/schemalock/schemalock/internal/registry"
+	"github.com/schemalock/schemalock/internal/validator"
 )
 
 // Config holds the external dependencies injected into a [Server].
