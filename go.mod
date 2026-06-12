@@ -9,7 +9,7 @@ require (
 	go.lsp.dev/protocol v0.12.0
 	go.lsp.dev/uri v0.3.0
 	go.uber.org/zap v1.27.0
-	golang.org/x/sync v0.20.0
+	golang.org/x/sync v0.21.0
 )
 
 require (
